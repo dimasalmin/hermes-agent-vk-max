@@ -23,7 +23,7 @@ def test_message_from_update_uses_body_mid_and_recipient_chat_type() -> None:
     assert message is not None
     assert message.message_id == "mid-7"
     assert message.user_id == "42"
-    assert message.chat_id == "9001"
+    assert message.chat_id == "42"
     assert message.chat_type == "dialog"
     assert message.text == "hello"
     assert message.attachments[0]["type"] == "image"
@@ -48,3 +48,4 @@ def test_message_from_update_marks_bot_sender() -> None:
     assert message is not None
     assert message.is_bot is True
     assert message.is_group is True
+    assert message.chat_id == "8"

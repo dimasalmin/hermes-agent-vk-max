@@ -46,8 +46,14 @@ class MaxMessage:
             return None
 
         user_id = str(sender.get("user_id") or recipient.get("user_id") or "").strip()
-        chat_id = str(recipient.get("chat_id") or user_id).strip()
         chat_type = str(recipient.get("chat_type") or "dialog").strip().lower()
+        # MAX addresses direct-message sends by user_id.  A dialog update may
+        # still include an internal recipient chat_id, but /messages expects
+        # the sender's user_id for that target type.
+        if chat_type in {"chat", "group", "channel"}:
+            chat_id = str(recipient.get("chat_id") or user_id).strip()
+        else:
+            chat_id = user_id
         attachments = tuple(
             item for item in (body.get("attachments") or []) if isinstance(item, Mapping)
         )
