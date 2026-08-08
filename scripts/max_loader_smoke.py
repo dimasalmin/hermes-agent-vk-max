@@ -64,12 +64,25 @@ def main() -> int:
     if missing:
         raise SystemExit(f"MAX registration hooks missing: {', '.join(missing)}")
 
+    # The real PluginContext writes a PlatformEntry to Hermes' registry before
+    # any adapter factory is instantiated. Mirror that small lifecycle step so
+    # Platform("max") exercises the same dynamic-enum path as gateway startup.
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    platform_registry.register(PlatformEntry(**entry))
     signature = inspect.signature(module.MaxAdapter.connect)
     if "is_reconnect" not in signature.parameters:
         raise SystemExit("MaxAdapter.connect lacks is_reconnect")
+    try:
+        from gateway.config import PlatformConfig
+
+        module.MaxAdapter(PlatformConfig(enabled=True, token="loader-smoke-token"))
+    except Exception as exc:  # noqa: BLE001 - report the contract failure clearly
+        raise SystemExit(f"MaxAdapter cannot instantiate against Hermes: {exc}") from exc
 
     print(f"plugin_import=ok module={name}")
     print(f"platform_name={entry['name']}")
+    print("adapter_instantiation=ok")
     print(f"hooks={','.join(sorted(required))}")
     print("writes_hermes_core=no")
     return 0

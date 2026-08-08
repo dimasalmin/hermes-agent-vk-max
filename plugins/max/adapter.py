@@ -631,6 +631,15 @@ async def standalone_send(
         )
         try:
             target_type = "chat" if str(chat_id) in set(extra.get("group_allowed_chats", [])) else "user"
+            target_path = str(
+                extra.get("target_path")
+                or os.environ.get("MAX_TARGET_PATH", Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser() / "max" / "targets.sqlite3")
+            )
+            target_store = MaxTargetStore(target_path)
+            try:
+                target_type = target_store.get(str(chat_id)) or target_type
+            finally:
+                target_store.close()
             last_id = None
             for chunk in split_message(message, MAX_MESSAGE_LENGTH):
                 response = await client.send_message(str(chat_id), chunk, target_type=target_type)
