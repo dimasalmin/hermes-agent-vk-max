@@ -321,6 +321,14 @@ Community articles are used as operational evidence and warnings, not as normati
 - TLS policy, запрещающая отключение проверки сертификатов;
 - read-only loader smoke script and upgrade/rollback runbook.
 
+Live evidence on 2026-08-08: with the official Russian CA bundle supplied per
+client, MAX `/me` returned HTTP 200 for bot `id5834024914_1_bot`; one outbound
+message to test user `9533440` returned HTTP 200; Long Polling returned three
+updates, including two `message_created` events from that user. The real
+Hermes adapter connected and disconnected successfully in a disposable
+collector smoke without invoking the model. The active gateway was not
+restarted and the token was not written to repository or service files.
+
 Проверки после изменений: **60 тестов проходят**; отдельный импорт и регистрация
 через loader-style smoke на реальном Hermes v0.20.0 проходят:
 `plugin_import=ok`, `platform_name=max`, `writes_hermes_core=no`. Hermes core,

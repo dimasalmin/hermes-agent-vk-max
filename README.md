@@ -41,6 +41,16 @@ python -m pytest -q
 The current suite includes contract tests for the MAX API client, update parsing,
 TLS policy, bounded Webhook queue and Hermes loader compatibility.
 
+Live checks, with secrets supplied only through the environment:
+
+```bash
+python scripts/max_live_smoke.py --user-id 9533440 --send --poll-seconds 30
+python scripts/max_adapter_live_smoke.py --seconds 8
+```
+
+The second command uses a disposable SQLite state directory and a collector in
+place of the model handler; it does not start or restart the active gateway.
+
 ## Installation into Hermes
 
 Copy or junction only the MAX plugin directory. Keep this repository separate

@@ -38,3 +38,18 @@ MAX_CA_BUNDLE=/etc/hermes/max-ca-bundle.pem
 The same policy applies to the optional Webhook ingress. TLS termination for
 public port 443 belongs to the reverse proxy; the ingress should receive only
 traffic from that proxy or a network boundary with equivalent controls.
+
+## 2026-08-08 host evidence
+
+The WSL system trust store did not contain the MAX chain. The endpoint served
+`*.max.ru -> Russian Trusted Sub CA -> Russian Trusted Root CA`. A per-client
+bundle built from the official Russian certificates passed the TLS handshake
+and MAX `/me` returned HTTP 200. The observed SHA-256 fingerprints were:
+
+```text
+Russian Trusted Sub CA:  BB:BD:E2:10:3E:79:0B:99:9E:C6:2B:D0:3C:F6:25:A5:A2:E7:C3:16:E1:0A:FE:6A:49:0E:ED:EA:D8:B3:FD:9B
+Russian Trusted Root CA: D2:6D:2D:02:31:B7:C3:9F:92:CC:73:85:12:BA:54:10:35:19:E4:40:5D:68:B5:BD:70:3E:97:88:CA:8E:CF:31
+```
+
+This validates the current host path only; it is not a universal network or
+mobile-operator availability result.

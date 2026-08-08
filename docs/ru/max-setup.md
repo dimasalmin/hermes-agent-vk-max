@@ -113,6 +113,12 @@ reverse proxy. Подробности: `docs/ops/max-upgrade-safe.md` и
 python -m pytest -q
 ```
 
+Для live-проверки задайте `MAX_BOT_TOKEN` и `MAX_CA_BUNDLE` только в окружении
+процесса и запустите `scripts/max_live_smoke.py`. Проверка
+`scripts/max_adapter_live_smoke.py` использует временный SQLite и collector
+вместо вызова модели Hermes; активный gateway не запускается и не
+перезапускается.
+
 Перед рестартом gateway выполните loader smoke-тест на текущей версии Hermes.
 Для отката остановите gateway и удалите или перенаправьте только
 `~/.hermes/plugins/max`. Файлы Hermes core при установке плагина не меняются.

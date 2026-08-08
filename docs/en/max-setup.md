@@ -97,6 +97,11 @@ bypass Hermes global authorization.
 python -m pytest -q
 ```
 
+For a live transport check, provide `MAX_BOT_TOKEN` and `MAX_CA_BUNDLE` only in
+the shell environment, then run `scripts/max_live_smoke.py`. The adapter-level
+check `scripts/max_adapter_live_smoke.py` uses temporary SQLite state and a
+collector instead of Hermes model execution.
+
 Before restarting Hermes, run the loader import smoke against the current
 Hermes installation. To roll back, stop the gateway, remove or retarget only
 `~/.hermes/plugins/max`, then start Hermes again. Hermes core files are not
