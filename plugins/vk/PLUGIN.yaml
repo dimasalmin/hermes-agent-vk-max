@@ -1,0 +1,45 @@
+name: vk
+label: VKontakte
+kind: platform
+version: 0.1.0
+description: >
+  Hermes Agent adapter for VK (VKontakte) community bots. Whitelist-friendly channel
+  for Russian users — no VPN needed under regulator-imposed connectivity restrictions.
+author: hermes-agent-ru-messengers contributors
+license: MIT
+homepage: https://github.com/<placeholder>/hermes-agent-ru-messengers
+
+requires_env:
+  - name: VK_GROUP_TOKEN
+    description: "Community access token (vk.com → Manage group → API usage → Access tokens)"
+    prompt: "VK Group Token"
+    password: true
+    category: messaging
+    url: "https://dev.vk.com/api/community-messages/getting-started"
+  - name: VK_GROUP_ID
+    description: "Numeric VK group/community ID"
+    prompt: "VK Group ID"
+    category: messaging
+
+optional_env:
+  - name: VK_ALLOWED_USERS
+    description: "Comma-separated VK user IDs allowed in DM and chats"
+    category: messaging
+  - name: VK_GROUP_ALLOWED_USERS
+    description: "User IDs allowed in multi-user chats only"
+    category: messaging
+  - name: VK_GROUP_ALLOWED_CHATS
+    description: "peer_id values (>=2000000001) of chats where any member can invoke the bot"
+    category: messaging
+  - name: VK_ALLOW_ALL_USERS
+    description: "Set to 'true' to disable allowlisting (NOT recommended)"
+    category: messaging
+  - name: VK_GUEST_MODE
+    description: "Allow non-allowlisted chats to respond on explicit @mention"
+    category: messaging
+  - name: VK_HOME_CHANNEL
+    description: "peer_id receiving scheduled/cron deliveries"
+    category: messaging
+  - name: VK_API_VERSION
+    description: "Override VK API version (defaults to library default)"
+    category: messaging
