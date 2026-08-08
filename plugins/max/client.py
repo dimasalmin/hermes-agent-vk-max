@@ -172,6 +172,27 @@ class MaxClient:
             json=body,
         )
 
+    async def answer_callback(
+        self,
+        callback_id: str,
+        *,
+        message: Optional[Mapping[str, Any]] = None,
+    ) -> Any:
+        """Acknowledge a button click and optionally replace its message."""
+
+        callback_id = str(callback_id).strip()
+        if not callback_id:
+            raise ValueError("MAX callback_id must not be empty")
+        body: dict[str, Any] = {}
+        if message is not None:
+            body["message"] = dict(message)
+        return await self._request(
+            "POST",
+            "/answers",
+            params={"callback_id": callback_id},
+            json=body,
+        )
+
     async def subscribe_webhook(
         self,
         url: str,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from plugins.max.models import MaxMessage
+from plugins.max.models import MaxCallback, MaxMessage
 
 
 def test_message_from_update_uses_body_mid_and_recipient_chat_type() -> None:
@@ -49,3 +49,33 @@ def test_message_from_update_marks_bot_sender() -> None:
     assert message.is_bot is True
     assert message.is_group is True
     assert message.chat_id == "8"
+
+
+def test_callback_from_update_normalizes_dm_sender_and_message() -> None:
+    update = {
+        "update_type": "message_callback",
+        "callback": {
+            "callback_id": "callback-1",
+            "payload": "hmx:clarify:opaque-token",
+            "user": {"user_id": 9533440, "name": "Alice"},
+            "message": {
+                "sender": {"user_id": 999, "is_bot": True},
+                "recipient": {"chat_type": "dialog", "user_id": 999},
+                "body": {"mid": "prompt-1", "text": "Choose"},
+            },
+        },
+    }
+
+    callback = MaxCallback.from_update(update)
+
+    assert callback is not None
+    assert callback.callback_id == "callback-1"
+    assert callback.payload == "hmx:clarify:opaque-token"
+    assert callback.user_id == "9533440"
+    assert callback.chat_id == "9533440"
+    assert callback.chat_type == "dialog"
+    assert callback.message_id == "prompt-1"
+
+
+def test_callback_from_update_ignores_other_update_types() -> None:
+    assert MaxCallback.from_update({"update_type": "message_created"}) is None

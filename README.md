@@ -15,7 +15,8 @@ be measured for the target region, operator, device and incident mode.
 
 ## Current status
 
-The MAX plugin currently provides the infrastructure and text MVP path:
+The MAX plugin currently provides the infrastructure, text path and native
+interactive controls:
 
 - MAX Bot API v2 REST client at `platform-api2.max.ru`.
 - `Authorization` header, typed API errors and retry metadata.
@@ -25,11 +26,16 @@ The MAX plugin currently provides the infrastructure and text MVP path:
 - Development Long Polling with marker handling.
 - Webhook secret validation, bounded queue and dedup receiver.
 - DM/group allowlist policy and text chunking at 4000 characters.
+- Native MAX inline keyboards for Hermes clarify prompts, dangerous-command
+  approvals and slash confirmations. Button callbacks use the official
+  `message_callback` -> `/answers` flow.
+- Opaque, short-lived, single-use callback state bound to the MAX user and
+  chat. Group prompts fall back to text unless Hermes provides a user-bound
+  control metadata value.
 - TLS verification with an optional deployment-managed `MAX_CA_BUNDLE`.
 
-Media upload, callback approval buttons and streaming edits are separate release
-gates. The optional Webhook ingress is a separate process and is not embedded in
-the Hermes gateway.
+Media upload and streaming edits remain separate release gates. The optional
+Webhook ingress is a separate process and is not embedded in the Hermes gateway.
 
 ## Development
 
@@ -72,6 +78,8 @@ At minimum:
 ```env
 MAX_BOT_TOKEN=<token from MAX for Business>
 MAX_ALLOWED_USERS=<numeric MAX user ids separated by commas>
+# Optional; defaults to 600 seconds and is intentionally in-memory only.
+MAX_CALLBACK_TTL_SECONDS=600
 ```
 
 Hermes applies `MAX_ALLOWED_USERS` before the adapter. Group-only users must

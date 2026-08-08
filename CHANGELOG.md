@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Added MAX inline keyboards for Hermes clarify prompts, exec approvals and
+  slash confirmations.
+- Added official `/answers` callback acknowledgement, user/chat binding,
+  expiry and single-use replay protection.
+- Kept the feature in the external plugin; Hermes core remains unchanged.
+
 ## 0.2.0 - 2026-08-08
 
 - Rebuilt MAX integration as an external Hermes plugin using the current v0.20.0
@@ -8,7 +16,7 @@
   secret validation, durable SQLite inbox and optional standalone ASGI ingress.
 - Added DM/group allowlist policy, MAX reply `link.mid`, persistent target type,
   TLS fail-closed checks and global/per-dialog rate limiting.
-- Marked media, callbacks, streaming edit coalescing, health metrics and live
+- Marked media, streaming edit coalescing, health metrics and live
   no-VPN validation as remaining release gates.
 
 This release does not modify Hermes core and is not a claim of universal MAX

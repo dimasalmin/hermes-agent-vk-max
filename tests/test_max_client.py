@@ -58,6 +58,32 @@ async def test_edit_message_uses_message_id_query() -> None:
 
 
 @pytest.mark.asyncio
+async def test_answer_callback_posts_message_update_by_callback_id() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert str(request.url) == f"{DEFAULT_API_BASE}/answers?callback_id=cb-1"
+        assert loads(request.content) == {
+            "message": {
+                "text": "Resolved",
+                "attachments": [],
+                "format": "markdown",
+            }
+        }
+        return httpx.Response(200, json={"success": True})
+
+    client = _client(handler)
+    try:
+        result = await client.answer_callback(
+            "cb-1",
+            message={"text": "Resolved", "attachments": [], "format": "markdown"},
+        )
+    finally:
+        await client.close()
+
+    assert result == {"success": True}
+
+
+@pytest.mark.asyncio
 async def test_subscribe_webhook_sends_secret_and_update_types() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"

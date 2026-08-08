@@ -75,7 +75,8 @@ except ImportError:  # pragma: no cover - used only by standalone unit tests
 
 from .client import DEFAULT_API_BASE, MaxApiError, MaxClient
 from .common import AccessPolicy, split_message
-from .models import MaxMessage
+from .interactive import MaxCallbackStore, build_inline_keyboard
+from .models import MaxCallback, MaxMessage
 from .polling_state import MaxTargetStore, PollingMarkerStore
 from .rate_limit import MAX_MESSAGE_LENGTH, MaxRateLimiter, with_backoff
 from .tls import tls_verify_from_env
@@ -268,6 +269,16 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
         self._marker_store: Optional[PollingMarkerStore] = None
         self._target_store: Optional[MaxTargetStore] = None
         self._rate_limiter = MaxRateLimiter()
+        try:
+            callback_ttl = float(
+                self._extra.get(
+                    "callback_ttl_seconds",
+                    os.environ.get("MAX_CALLBACK_TTL_SECONDS", "600"),
+                )
+            )
+        except (TypeError, ValueError):
+            callback_ttl = 600.0
+        self._callbacks = MaxCallbackStore(ttl_seconds=callback_ttl)
         self._lock_acquired = False
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -431,6 +442,11 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
         return await self._receiver.receive(headers, update)
 
     async def _dispatch_update(self, update: Mapping[str, Any]) -> None:
+        callback = MaxCallback.from_update(update)
+        if callback is not None:
+            await self._dispatch_callback(callback)
+            return
+
         message = MaxMessage.from_update(update)
         if message is None:
             return
@@ -456,8 +472,217 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             return
         await self.handle_message(_build_message_event(self, message))
 
+    async def _dispatch_callback(self, callback: MaxCallback) -> None:
+        """Resolve a MAX button through Hermes' native interactive hooks."""
+
+        if callback.is_group:
+            authorized = self._access.can_group(
+                callback.user_id, callback.chat_id, mentioned=False
+            )
+        else:
+            authorized = self._access.can_dm(callback.user_id)
+        if not authorized:
+            await self._answer_callback(callback, "Нет доступа к этой кнопке.")
+            return
+
+        entry = self._callbacks.consume(
+            callback.payload,
+            user_id=callback.user_id,
+            chat_id=callback.chat_id,
+        )
+        if entry is None:
+            await self._answer_callback(callback, "Кнопка устарела или уже использована.")
+            return
+
+        try:
+            if entry.kind == "approval":
+                from tools.approval import resolve_gateway_approval
+
+                count = resolve_gateway_approval(entry.session_key, entry.value)
+                labels = {
+                    "once": "Разрешено один раз",
+                    "session": "Разрешено на сессию",
+                    "always": "Разрешено всегда",
+                    "deny": "Запрещено",
+                }
+                label = labels.get(entry.value, "Запрос обработан") if count else "Запрос уже завершен"
+                await self._answer_callback(callback, label)
+                if count:
+                    resume = getattr(self, "resume_typing_for_chat", None)
+                    if callable(resume):
+                        resume(callback.chat_id)
+                return
+
+            if entry.kind == "slash":
+                from tools import slash_confirm
+
+                choice, confirm_id = entry.value.split(":", 1)
+                result_text = await slash_confirm.resolve(
+                    entry.session_key, confirm_id, choice
+                )
+                labels = {
+                    "once": "Подтверждено один раз",
+                    "always": "Подтверждено всегда",
+                    "cancel": "Отменено",
+                }
+                await self._answer_callback(callback, labels.get(choice, "Запрос обработан"))
+                if result_text:
+                    await self.send(
+                        callback.chat_id,
+                        str(result_text),
+                        metadata={
+                            "max_target_type": "chat" if callback.is_group else "user"
+                        },
+                    )
+                return
+
+            if entry.kind == "clarify":
+                clarify_id, choice_token = entry.value.split(":", 1)
+                if choice_token == "other":
+                    from tools.clarify_gateway import mark_awaiting_text
+
+                    if mark_awaiting_text(clarify_id):
+                        await self._answer_callback(
+                            callback, "Введите свой вариант следующим сообщением."
+                        )
+                    else:
+                        await self._answer_callback(callback, "Запрос уже завершен.")
+                    return
+
+                idx = int(choice_token)
+                resolved_text: Optional[str] = None
+                try:
+                    from tools.clarify_gateway import _entries as clarify_entries
+
+                    clarify_entry = clarify_entries.get(clarify_id)
+                    if clarify_entry and clarify_entry.choices and 0 <= idx < len(clarify_entry.choices):
+                        resolved_text = str(clarify_entry.choices[idx])
+                except Exception:
+                    resolved_text = None
+                resolved_text = resolved_text or f"choice {idx + 1}"
+
+                from tools.clarify_gateway import resolve_gateway_clarify
+
+                resolved = resolve_gateway_clarify(clarify_id, resolved_text)
+                await self._answer_callback(
+                    callback,
+                    f"Выбрано: {resolved_text}" if resolved else "Запрос уже завершен.",
+                )
+                return
+
+            await self._answer_callback(callback, "Неизвестная кнопка.")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MAX callback resolution failed: %s", exc, exc_info=True)
+            await self._answer_callback(callback, "Не удалось обработать кнопку.")
+
+    async def _answer_callback(self, callback: MaxCallback, text: str) -> None:
+        if self._client is None:
+            return
+        body = {
+            "text": str(text)[:MAX_MESSAGE_LENGTH],
+            "attachments": [],
+            "format": "markdown",
+        }
+        try:
+            await self._rate_limiter.acquire(callback.chat_id)
+
+            async def _answer() -> Mapping[str, Any]:
+                return await self._client.answer_callback(
+                    callback.callback_id,
+                    message=body,
+                )
+
+            await with_backoff(
+                _answer,
+                is_rate_limit=_is_max_rate_limit,
+                extract_retry_after=_retry_after,
+            )
+        except MaxApiError as exc:
+            logger.warning("MAX callback answer failed: %s", exc)
+
     def _is_mentioned(self, text: str) -> bool:
         return bool(self._bot_username and f"@{self._bot_username.lower()}" in text.lower())
+
+    def _target_type_for(
+        self, chat_id: str, metadata: Optional[Mapping[str, Any]] = None
+    ) -> str:
+        target_type = self._chat_target_types.get(chat_id)
+        target_store = getattr(self, "_target_store", None)
+        if target_type is None and target_store is not None:
+            target_type = target_store.get(chat_id)
+        target_type = target_type or "user"
+        if metadata and metadata.get("max_target_type") in {"user", "chat"}:
+            target_type = str(metadata["max_target_type"])
+        return target_type
+
+    def _interactive_context(
+        self, chat_id: str, metadata: Optional[Mapping[str, Any]] = None
+    ) -> Optional[tuple[str, str]]:
+        target_type = self._target_type_for(chat_id, metadata)
+        user_id = ""
+        if metadata:
+            for key in ("max_user_id", "user_id", "sender_id"):
+                if metadata.get(key):
+                    user_id = str(metadata[key]).strip()
+                    break
+        if not user_id and target_type == "user":
+            user_id = str(chat_id).strip()
+        # Hermes currently supplies no sender identity in the generic control
+        # metadata for group prompts.  Refuse native buttons there so a second
+        # authorized group member cannot approve another user's request.
+        if not user_id:
+            return None
+        return target_type, user_id
+
+    async def _send_interactive_prompt(
+        self,
+        chat_id: str,
+        content: str,
+        rows: list[list[Mapping[str, str]]],
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
+    ) -> Any:
+        if self._client is None:
+            return SendResult(success=False, error="MAX adapter is not connected")
+        if not content:
+            return SendResult(success=False, error="MAX message is empty")
+        context = self._interactive_context(chat_id, metadata)
+        if context is None:
+            return SendResult(
+                success=False,
+                error="MAX native buttons require a user-bound direct message",
+            )
+        target_type, _user_id = context
+        try:
+            await self._rate_limiter.acquire(chat_id)
+
+            async def _send() -> Mapping[str, Any]:
+                return await self._client.send_message(
+                    chat_id,
+                    content[:MAX_MESSAGE_LENGTH],
+                    target_type=target_type,
+                    link=_reply_link(reply_to),
+                    attachments=[build_inline_keyboard(rows)],
+                )
+
+            response = await with_backoff(
+                _send,
+                is_rate_limit=_is_max_rate_limit,
+                extract_retry_after=_retry_after,
+            )
+        except MaxApiError as exc:
+            return SendResult(
+                success=False,
+                error=str(exc),
+                retryable=exc.retryable,
+                retry_after=exc.retry_after,
+            )
+        return SendResult(
+            success=True,
+            message_id=_response_message_id(response),
+            raw_response=response,
+        )
 
     async def send(
         self,
@@ -477,12 +702,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
                 retryable=False,
             )
 
-        target_type = self._chat_target_types.get(chat_id)
-        if target_type is None and self._target_store is not None:
-            target_type = self._target_store.get(chat_id)
-        target_type = target_type or "user"
-        if metadata and metadata.get("max_target_type") in {"user", "chat"}:
-            target_type = metadata["max_target_type"]
+        target_type = self._target_type_for(chat_id, metadata)
         message_ids: list[str] = []
         for index, chunk in enumerate(split_message(content, MAX_MESSAGE_LENGTH)):
             link = _reply_link(reply_to) if index == 0 else None
@@ -513,6 +733,133 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             if message_id:
                 message_ids.append(message_id)
         return _send_result_from_ids(message_ids)
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        if not choices:
+            return await self.send(chat_id, f"❓ {question}", metadata=metadata)
+
+        context = self._interactive_context(chat_id, metadata)
+        if context is None:
+            return SendResult(
+                success=False,
+                error="MAX native buttons require a user-bound direct message",
+            )
+        _target_type, user_id = context
+        rows: list[list[Mapping[str, str]]] = []
+        option_lines = [f"{index + 1}. {choice}" for index, choice in enumerate(choices)]
+        for index, _choice in enumerate(choices):
+            payload = self._callbacks.issue(
+                "clarify",
+                f"{clarify_id}:{index}",
+                user_id=user_id,
+                chat_id=chat_id,
+                session_key=session_key,
+            )
+            rows.append([{"type": "callback", "text": str(index + 1), "payload": payload}])
+        other_payload = self._callbacks.issue(
+            "clarify",
+            f"{clarify_id}:other",
+            user_id=user_id,
+            chat_id=chat_id,
+            session_key=session_key,
+        )
+        rows.append([{"type": "callback", "text": "Другое", "payload": other_payload}])
+        return await self._send_interactive_prompt(
+            chat_id,
+            "❓ " + str(question) + "\n\n" + "\n".join(option_lines),
+            rows,
+            metadata=metadata,
+        )
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        allow_session: bool = True,
+        smart_denied: bool = False,
+    ) -> Any:
+        del smart_denied
+        context = self._interactive_context(chat_id, metadata)
+        if context is None:
+            return SendResult(
+                success=False,
+                error="MAX native buttons require a user-bound direct message",
+            )
+        _target_type, user_id = context
+        choices: list[tuple[str, str]] = [("once", "Разрешить один раз")]
+        if allow_session:
+            choices.append(("session", "Разрешить на сессию"))
+        if allow_permanent:
+            choices.append(("always", "Разрешить всегда"))
+        choices.append(("deny", "Запретить"))
+        rows: list[list[Mapping[str, str]]] = []
+        for index in range(0, len(choices), 2):
+            row: list[Mapping[str, str]] = []
+            for choice, label in choices[index : index + 2]:
+                payload = self._callbacks.issue(
+                    "approval",
+                    choice,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    session_key=session_key,
+                )
+                row.append({"type": "callback", "text": label, "payload": payload})
+            rows.append(row)
+        preview = str(command)
+        if len(preview) > 3200:
+            preview = preview[:3200] + "..."
+        text = f"⚠️ Требуется подтверждение команды:\n\n```\n{preview}\n```\nПричина: {description}"
+        return await self._send_interactive_prompt(chat_id, text, rows, metadata=metadata)
+
+    async def send_slash_confirm(
+        self,
+        chat_id: str,
+        title: str,
+        message: str,
+        session_key: str,
+        confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        context = self._interactive_context(chat_id, metadata)
+        if context is None:
+            return SendResult(
+                success=False,
+                error="MAX native buttons require a user-bound direct message",
+            )
+        _target_type, user_id = context
+        choices = (
+            ("once", "Подтвердить один раз"),
+            ("always", "Подтверждать всегда"),
+            ("cancel", "Отмена"),
+        )
+        rows: list[list[Mapping[str, str]]] = []
+        for choice, label in choices:
+            payload = self._callbacks.issue(
+                "slash",
+                f"{choice}:{confirm_id}",
+                user_id=user_id,
+                chat_id=chat_id,
+                session_key=session_key,
+            )
+            rows.append([{"type": "callback", "text": label, "payload": payload}])
+        return await self._send_interactive_prompt(
+            chat_id,
+            f"**{title}**\n\n{message}",
+            rows,
+            metadata=metadata,
+        )
 
     async def edit_message(
         self,
@@ -586,6 +933,7 @@ def apply_yaml_config(_yaml_cfg: dict, platform_cfg: dict) -> dict[str, Any]:
         "webhook_url": "MAX_WEBHOOK_URL",
         "webhook_secret": "MAX_WEBHOOK_SECRET",
         "ca_bundle": "MAX_CA_BUNDLE",
+        "callback_ttl_seconds": "MAX_CALLBACK_TTL_SECONDS",
         "require_mention": "MAX_REQUIRE_MENTION",
         "allow_from": "MAX_ALLOWED_USERS",
         "group_allow_from": "MAX_GROUP_ALLOWED_USERS",
@@ -597,7 +945,14 @@ def apply_yaml_config(_yaml_cfg: dict, platform_cfg: dict) -> dict[str, Any]:
         env_name = env_map.get(key)
         if env_name and not os.environ.get(env_name):
             os.environ[env_name] = str(value).lower() if isinstance(value, bool) else str(value)
-        if key in {"api_base_url", "webhook_url", "webhook_secret", "ca_bundle", "require_mention"}:
+        if key in {
+            "api_base_url",
+            "webhook_url",
+            "webhook_secret",
+            "ca_bundle",
+            "callback_ttl_seconds",
+            "require_mention",
+        }:
             result[key] = os.environ.get(env_name, value) if env_name else value
         elif key in {"allow_from", "group_allow_from", "group_allowed_chats"}:
             result[key] = value

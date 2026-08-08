@@ -74,3 +74,8 @@ optional_env:
     prompt: "MAX target state path"
     password: false
     category: messaging
+  - name: MAX_CALLBACK_TTL_SECONDS
+    description: "Lifetime of native MAX button callbacks in seconds"
+    prompt: "MAX button callback TTL"
+    password: false
+    category: messaging
