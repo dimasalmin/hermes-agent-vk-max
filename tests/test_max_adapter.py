@@ -46,6 +46,7 @@ def _interactive_adapter(client: _InteractiveClient) -> MaxAdapter:
     adapter._target_store = None
     adapter._rate_limiter = MaxRateLimiter()
     adapter._callbacks = MaxCallbackStore()
+    adapter._model_pickers = {}
     adapter._access = AccessPolicy(allowed_users={"user-1"})
     return adapter
 
@@ -133,6 +134,101 @@ async def test_send_exec_approval_renders_max_inline_keyboard() -> None:
         "Запретить",
     ]
     assert all(button["payload"].startswith("hmx:approval:") for row in buttons for button in row)
+
+
+@pytest.mark.asyncio
+async def test_send_model_picker_renders_provider_buttons() -> None:
+    client = _InteractiveClient()
+    adapter = _interactive_adapter(client)
+
+    result = await adapter.send_model_picker(
+        "user-1",
+        providers=[
+            {
+                "slug": "custom",
+                "name": "Local model",
+                "models": ["qwen/test"],
+                "total_models": 1,
+                "is_current": True,
+            }
+        ],
+        current_model="qwen/test",
+        current_provider="custom",
+        session_key="session-1",
+        on_model_selected=lambda *_args: "switched",
+    )
+
+    assert result.success is True
+    _target_id, text, kwargs = client.sent[0]
+    assert "qwen/test" in text
+    buttons = kwargs["attachments"][0]["payload"]["buttons"]
+    assert [button["text"] for row in buttons for button in row] == [
+        "✓ Local model (1)",
+        "Отмена",
+    ]
+    assert all(button["payload"].startswith("hmx:model:") for row in buttons for button in row)
+
+
+@pytest.mark.asyncio
+async def test_model_picker_callbacks_navigate_and_switch_model(monkeypatch) -> None:
+    client = _InteractiveClient()
+    adapter = _interactive_adapter(client)
+    selected = []
+
+    async def on_model_selected(chat_id, model_id, provider_slug):
+        selected.append((chat_id, model_id, provider_slug))
+        return "Модель переключена"
+
+    await adapter.send_model_picker(
+        "user-1",
+        providers=[
+            {
+                "slug": "custom",
+                "name": "Local model",
+                "models": ["qwen/test"],
+                "total_models": 1,
+            }
+        ],
+        current_model="old/model",
+        current_provider="other",
+        session_key="session-1",
+        on_model_selected=on_model_selected,
+    )
+
+    provider_payload = client.sent[0][2]["attachments"][0]["payload"]["buttons"][0][0]["payload"]
+    provider_callback = MaxCallback.from_update(
+        {
+            "update_type": "message_callback",
+            "callback": {
+                "callback_id": "cb-provider",
+                "payload": provider_payload,
+                "user": {"user_id": "user-1"},
+                "message": {"recipient": {"chat_type": "dialog"}},
+            },
+        }
+    )
+    assert provider_callback is not None
+    await adapter._dispatch_callback(provider_callback)
+
+    model_message = client.answers[-1][1]["message"]
+    assert "Local model" in model_message["text"]
+    model_payload = model_message["attachments"][0]["payload"]["buttons"][0][0]["payload"]
+    model_callback = MaxCallback.from_update(
+        {
+            "update_type": "message_callback",
+            "callback": {
+                "callback_id": "cb-model",
+                "payload": model_payload,
+                "user": {"user_id": "user-1"},
+                "message": {"recipient": {"chat_type": "dialog"}},
+            },
+        }
+    )
+    assert model_callback is not None
+    await adapter._dispatch_callback(model_callback)
+
+    assert selected == [("user-1", "qwen/test", "custom")]
+    assert client.answers[-1][1]["message"]["text"] == "Модель переключена"
 
 
 @pytest.mark.asyncio

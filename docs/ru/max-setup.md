@@ -104,8 +104,8 @@ reverse proxy. Подробности: `docs/ops/max-upgrade-safe.md` и
 - Hermes plugin contract, YAML hook и standalone sender;
 - безопасная TLS-политика.
 
-Пока не считаются production-ready: загрузка/отправка медиа, callback approval
-кнопки, полноценный streaming UX и полевой тест без VPN.
+Пока не считаются production-ready: загрузка/отправка медиа, полноценный
+streaming UX и полевой тест без VPN.
 
 ## 8. Проверка и откат
 

@@ -29,6 +29,8 @@ interactive controls:
 - Native MAX inline keyboards for Hermes clarify prompts, dangerous-command
   approvals and slash confirmations. Button callbacks use the official
   `message_callback` -> `/answers` flow.
+- Native `/model` picker with provider and model selection, using the same
+  callback state and Hermes `on_model_selected` hook as Telegram.
 - Opaque, short-lived, single-use callback state bound to the MAX user and
   chat. Group prompts fall back to text unless Hermes provides a user-bound
   control metadata value.

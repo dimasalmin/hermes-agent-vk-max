@@ -6,6 +6,8 @@ useful in a chat session:
 - `send_clarify`: one callback button per option plus `Other` for typed input;
 - `send_exec_approval`: Once, Session, Always and Deny where enabled by Hermes;
 - `send_slash_confirm`: Once, Always and Cancel.
+- `send_model_picker`: provider selection followed by model selection and the
+  existing Hermes `on_model_selected` callback.
 
 ## Callback lifecycle
 
@@ -17,6 +19,10 @@ useful in a chat session:
 5. The adapter resolves the corresponding Hermes primitive and acknowledges the
    click with `POST /answers?callback_id=...`, replacing the prompt message and
    removing its buttons.
+
+The model picker uses the same flow for navigation: selecting a provider
+replaces the provider keyboard with model buttons; selecting a model invokes
+Hermes' callback and replaces the picker with the result.
 
 Callback state is process-local by design. A gateway restart invalidates pending
 buttons, because persisting a token without the live Hermes wait primitive could

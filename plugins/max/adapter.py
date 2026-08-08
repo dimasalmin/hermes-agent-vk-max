@@ -9,10 +9,12 @@ adapter only translates MAX events into Hermes' normalized event contract.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from secrets import token_urlsafe
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
@@ -279,6 +281,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
         except (TypeError, ValueError):
             callback_ttl = 600.0
         self._callbacks = MaxCallbackStore(ttl_seconds=callback_ttl)
+        self._model_pickers: dict[str, dict[str, Any]] = {}
         self._lock_acquired = False
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -346,6 +349,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
                     pass
         self._polling_task = None
         self._worker_task = None
+        self._model_pickers.clear()
         if self._client is not None:
             await self._client.close()
             self._client = None
@@ -570,17 +574,105 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
                 )
                 return
 
+            if entry.kind == "model":
+                await self._dispatch_model_callback(callback, entry.value)
+                return
+
             await self._answer_callback(callback, "Неизвестная кнопка.")
         except Exception as exc:  # noqa: BLE001
             logger.warning("MAX callback resolution failed: %s", exc, exc_info=True)
             await self._answer_callback(callback, "Не удалось обработать кнопку.")
 
-    async def _answer_callback(self, callback: MaxCallback, text: str) -> None:
+    async def _dispatch_model_callback(
+        self, callback: MaxCallback, value: str
+    ) -> None:
+        parts = str(value).split(":", 2)
+        if len(parts) < 2:
+            await self._answer_callback(callback, "Кнопка выбора модели некорректна.")
+            return
+        picker_id, action = parts[0], parts[1]
+        argument = parts[2] if len(parts) == 3 else ""
+        state = self._model_pickers.get(picker_id)
+        if state is None:
+            await self._answer_callback(callback, "Выбор модели устарел. Откройте /model заново.")
+            return
+
+        if action == "cancel":
+            self._model_pickers.pop(picker_id, None)
+            await self._answer_callback(callback, "Выбор модели отменен.")
+            return
+
+        if action == "back":
+            rows = self._model_provider_rows(state, picker_id, callback)
+            await self._answer_callback(
+                callback,
+                self._model_picker_provider_text(state),
+                attachments=[build_inline_keyboard(rows)],
+            )
+            return
+
+        if action == "provider":
+            provider = next(
+                (item for item in state["providers"] if str(item.get("slug")) == argument),
+                None,
+            )
+            if provider is None:
+                await self._answer_callback(callback, "Провайдер не найден.")
+                return
+            state["selected_provider"] = argument
+            state["selected_provider_name"] = str(provider.get("name") or argument)
+            state["model_list"] = [str(model) for model in provider.get("models", [])]
+            rows = self._model_rows(state, picker_id, callback)
+            await self._answer_callback(
+                callback,
+                self._model_picker_model_text(state),
+                attachments=[build_inline_keyboard(rows)],
+            )
+            return
+
+        if action == "model":
+            try:
+                index = int(argument)
+            except ValueError:
+                await self._answer_callback(callback, "Модель указана некорректно.")
+                return
+            models = state.get("model_list", [])
+            if index < 0 or index >= len(models):
+                await self._answer_callback(callback, "Модель не найдена.")
+                return
+            on_model_selected = state.get("on_model_selected")
+            if not callable(on_model_selected):
+                self._model_pickers.pop(picker_id, None)
+                await self._answer_callback(callback, "Выбор модели устарел.")
+                return
+            model_id = str(models[index])
+            provider_slug = str(state.get("selected_provider") or "")
+            try:
+                result_text = on_model_selected(callback.chat_id, model_id, provider_slug)
+                if inspect.isawaitable(result_text):
+                    result_text = await result_text
+                result_text = str(result_text or "Модель переключена.")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("MAX model picker switch failed: %s", exc, exc_info=True)
+                result_text = "Не удалось переключить модель."
+            self._model_pickers.pop(picker_id, None)
+            await self._answer_callback(callback, result_text)
+            return
+
+        await self._answer_callback(callback, "Неизвестное действие выбора модели.")
+
+    async def _answer_callback(
+        self,
+        callback: MaxCallback,
+        text: str,
+        *,
+        attachments: Optional[Iterable[Mapping[str, Any]]] = None,
+    ) -> None:
         if self._client is None:
             return
         body = {
             "text": str(text)[:MAX_MESSAGE_LENGTH],
-            "attachments": [],
+            "attachments": [dict(item) for item in attachments] if attachments is not None else [],
             "format": "markdown",
         }
         try:
@@ -860,6 +952,145 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             rows,
             metadata=metadata,
         )
+
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        context = self._interactive_context(chat_id, metadata)
+        if context is None:
+            return SendResult(
+                success=False,
+                error="MAX native buttons require a user-bound direct message",
+            )
+        _target_type, user_id = context
+        normalized = [item for item in providers if isinstance(item, Mapping)]
+        if not normalized:
+            return SendResult(success=False, error="MAX model provider list is empty")
+
+        picker_id = token_urlsafe(9)
+        self._model_pickers[picker_id] = {
+            "providers": normalized,
+            "current_model": str(current_model or ""),
+            "current_provider": str(current_provider or ""),
+            "selected_provider": "",
+            "selected_provider_name": "",
+            "model_list": [],
+            "on_model_selected": on_model_selected,
+            "session_key": session_key,
+            "user_id": user_id,
+            "chat_id": str(chat_id),
+        }
+        state = self._model_pickers[picker_id]
+        rows = self._model_provider_rows(state, picker_id, None)
+        result = await self._send_interactive_prompt(
+            chat_id,
+            self._model_picker_provider_text(state),
+            rows,
+            metadata=metadata,
+        )
+        if not getattr(result, "success", False):
+            self._model_pickers.pop(picker_id, None)
+        return result
+
+    def _model_provider_rows(
+        self,
+        state: Mapping[str, Any],
+        picker_id: str,
+        callback: Optional[MaxCallback],
+    ) -> list[list[Mapping[str, str]]]:
+        chat_id = callback.chat_id if callback else ""
+        user_id = callback.user_id if callback else str(state["user_id"])
+        rows: list[list[Mapping[str, str]]] = []
+        buttons: list[Mapping[str, str]] = []
+        for provider in state["providers"][:20]:
+            slug = str(provider.get("slug") or "").strip()
+            if not slug:
+                continue
+            name = str(provider.get("name") or slug)
+            count = provider.get("total_models", len(provider.get("models", [])))
+            label = f"{name} ({count})"
+            if slug == state.get("current_provider"):
+                label = f"✓ {label}"
+            payload = self._callbacks.issue(
+                "model",
+                f"{picker_id}:provider:{slug}",
+                user_id=user_id,
+                chat_id=chat_id or str(state.get("chat_id") or "user"),
+                session_key=str(state.get("session_key") or ""),
+            )
+            buttons.append({"type": "callback", "text": label[:60], "payload": payload})
+        for index in range(0, len(buttons), 2):
+            rows.append(buttons[index : index + 2])
+        rows.append([self._model_cancel_button(picker_id, user_id, chat_id, state)])
+        return rows
+
+    def _model_rows(
+        self,
+        state: Mapping[str, Any],
+        picker_id: str,
+        callback: MaxCallback,
+    ) -> list[list[Mapping[str, str]]]:
+        rows: list[list[Mapping[str, str]]] = []
+        buttons: list[Mapping[str, str]] = []
+        for index, model_id in enumerate(state.get("model_list", [])[:50]):
+            label = str(model_id).rsplit("/", 1)[-1]
+            if len(label) > 40:
+                label = label[:37] + "..."
+            payload = self._callbacks.issue(
+                "model",
+                f"{picker_id}:model:{index}",
+                user_id=callback.user_id,
+                chat_id=callback.chat_id,
+                session_key=str(state.get("session_key") or ""),
+            )
+            buttons.append({"type": "callback", "text": label, "payload": payload})
+        for index in range(0, len(buttons), 2):
+            rows.append(buttons[index : index + 2])
+        back_payload = self._callbacks.issue(
+            "model",
+            f"{picker_id}:back",
+            user_id=callback.user_id,
+            chat_id=callback.chat_id,
+            session_key=str(state.get("session_key") or ""),
+        )
+        rows.append([{"type": "callback", "text": "Назад", "payload": back_payload}])
+        rows.append([self._model_cancel_button(picker_id, callback.user_id, callback.chat_id, state)])
+        return rows
+
+    def _model_cancel_button(
+        self,
+        picker_id: str,
+        user_id: str,
+        chat_id: str,
+        state: Mapping[str, Any],
+    ) -> Mapping[str, str]:
+        payload = self._callbacks.issue(
+            "model",
+            f"{picker_id}:cancel",
+            user_id=user_id,
+            chat_id=chat_id or str(state.get("chat_id") or "user"),
+            session_key=str(state.get("session_key") or ""),
+        )
+        return {"type": "callback", "text": "Отмена", "payload": payload}
+
+    @staticmethod
+    def _model_picker_provider_text(state: Mapping[str, Any]) -> str:
+        model = state.get("current_model") or "неизвестна"
+        provider = state.get("current_provider") or "неизвестен"
+        return f"⚙️ Настройка модели\n\nТекущая модель: `{model}`\nПровайдер: {provider}\n\nВыберите провайдера:"
+
+    @staticmethod
+    def _model_picker_model_text(state: Mapping[str, Any]) -> str:
+        provider = state.get("selected_provider_name") or state.get("selected_provider")
+        models = state.get("model_list", [])
+        return f"⚙️ Настройка модели\n\nПровайдер: {provider}\nДоступно моделей: {len(models)}\n\nВыберите модель:"
 
     async def edit_message(
         self,

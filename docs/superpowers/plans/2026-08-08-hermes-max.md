@@ -148,10 +148,10 @@ Not yet production-ready: media, callback resolver wiring, streaming edit coales
 
 ### Task 3.1: Interactive controls
 
-- [ ] Map MAX inline buttons and `message_callback` to Hermes clarify prompts.
-- [ ] Implement exec approval and slash confirmation buttons with short-lived, single-use callback ids.
-- [ ] Implement model picker only if the existing Hermes hook is available without core changes.
-- [ ] Reject stale, replayed, or cross-user callback ids.
+- [x] Map MAX inline buttons and `message_callback` to Hermes clarify prompts.
+- [x] Implement exec approval and slash confirmation buttons with short-lived, single-use callback ids.
+- [x] Implement the model picker through the existing Hermes hook without core changes.
+- [x] Reject stale, replayed, or cross-user callback ids.
 
 **Verification:** End-to-end disposable-bot tests prove approve, deny, timeout, replay, and wrong-user behavior.
 

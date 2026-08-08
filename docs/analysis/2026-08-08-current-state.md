@@ -335,10 +335,12 @@ restarted and the token was not written to repository or service files.
 его конфигурация, systemd units and active gateway were not modified.
 
 Current limitations are explicit: no HTTP listener inside Hermes itself (the
-separate ingress is available), no media upload/download, no callback resolver
-wiring, no streaming edit coalescing/message-age policy, no subscription
-health/reconciliation metrics, and no real MAX token smoke yet. Поэтому это
-text MVP / integration foundation, not yet a production-ready channel.
+separate ingress is available), no media upload/download, no streaming edit
+coalescing/message-age policy, no subscription health/reconciliation metrics,
+and no complete manual UI callback acceptance record yet. The native callback
+resolver and `/model` picker are implemented in the external plugin, but the
+live gate still requires a real user click and replay/timeout evidence. Поэтому
+это text MVP / integration foundation, not yet a production-ready channel.
 
 ## 13. Итог
 

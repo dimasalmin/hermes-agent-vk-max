@@ -4,6 +4,7 @@
 
 - Added MAX inline keyboards for Hermes clarify prompts, exec approvals and
   slash confirmations.
+- Added a two-step `/model` picker for provider and model selection.
 - Added official `/answers` callback acknowledgement, user/chat binding,
   expiry and single-use replay protection.
 - Kept the feature in the external plugin; Hermes core remains unchanged.
