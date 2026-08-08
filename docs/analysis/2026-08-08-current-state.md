@@ -297,7 +297,7 @@ Community articles are used as operational evidence and warnings, not as normati
 
 ### Независимые обзоры
 
-Два параллельных обзора были выполнены доступными независимыми Codex-агентами. Они согласились с этой запиской по главным пунктам: MAX first, внешний Hermes plugin, собственный REST client, Webhook-first, строгая allowlist-политика, TLS bundle, early ACK/queue/dedup и отсутствие доказательств универсальной работы в белом списке. Выводы Claude и Antigravity в этот документ не приписываются: callable-интеграций этих систем в текущей сессии нет.
+Три независимых аудита были выполнены доступными агентами, включая отдельный high-reasoning аудит на `gpt-5.6-sol`. Они согласились с этой запиской по главным пунктам: MAX first, внешний Hermes plugin, собственный REST client, Webhook-first, строгая allowlist-политика, TLS bundle, early ACK/queue/dedup и отсутствие доказательств универсальной работы в белом списке. Дополнительные load-bearing замечания аудита: durable inbox вместо одного in-memory queue, persistent polling marker, scoped bot-token lock, корректный `link.mid`, rate limiter, отдельный ingress и проверка фактической PluginManager/registry-последовательности. Выводы Claude и Antigravity в этот документ не приписываются: callable-интеграций этих систем в текущей сессии нет.
 
 ## 12. Результат первой реализации
 
