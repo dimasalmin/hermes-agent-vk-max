@@ -1,6 +1,6 @@
 # Подключение MAX к Hermes Agent
 
-Это инструкция для текущего текстового MVP. Плагин не обещает универсальную
+Это инструкция для текущего MVP. Плагин не обещает универсальную
 доступность MAX при любых региональных ограничениях связи: результат зависит
 от региона, оператора, устройства и режима ограничения.
 
@@ -33,6 +33,8 @@ ln -s "/path/to/hermes-agent-ru-messengers/plugins/max" "$HOME/.hermes/plugins/m
 ```env
 MAX_BOT_TOKEN=<token MAX для бизнеса>
 MAX_ALLOWED_USERS=<числовые user_id через запятую>
+# Необязательно: максимум одного входящего/исходящего файла, 50 MiB по умолчанию.
+MAX_MEDIA_MAX_BYTES=52428800
 ```
 
 Если `MAX_WEBHOOK_URL` не задан, используется Long Polling. Это режим для
@@ -102,10 +104,13 @@ reverse proxy. Подробности: `docs/ops/max-upgrade-safe.md` и
 - Long Polling с marker;
 - Webhook secret, ACK decision, bounded queue и dedup;
 - Hermes plugin contract, YAML hook и standalone sender;
+- входящие image/audio/video/file через локальный Hermes media cache;
+- исходящие `MEDIA:` через актуальный `/uploads` и `payload.token`;
+- ограничение размера и проверка официальных HTTPS media-hosts;
 - безопасная TLS-политика.
 
-Пока не считаются production-ready: загрузка/отправка медиа, полноценный
-streaming UX и полевой тест без VPN.
+Пока не считаются release-ready без отдельной проверки на disposable bot:
+живой media acceptance, полноценный streaming UX и полевой тест без VPN.
 
 ## 8. Проверка и откат
 

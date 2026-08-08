@@ -1,6 +1,6 @@
 # MAX setup for Hermes Agent
 
-This document describes the current text MVP. It does not promise that MAX is
+This document describes the current MVP. It does not promise that MAX is
 available during every regional mobile-network restriction.
 
 ## 1. Create a MAX bot
@@ -25,11 +25,13 @@ New-Item -ItemType Junction `
 
 The installed directory must contain `plugin.yaml`, not `PLUGIN.yaml`.
 
-## 3. Text MVP configuration
+## 3. Configuration
 
 ```env
 MAX_BOT_TOKEN=...
 MAX_ALLOWED_USERS=123456789
+# Optional: per-attachment limit; default is 50 MiB.
+MAX_MEDIA_MAX_BYTES=52428800
 ```
 
 With no Webhook URL, the adapter uses Long Polling for development and smoke
@@ -81,11 +83,13 @@ users who are allowed only in groups still need to be present in
 `MAX_ALLOWED_USERS`; the group variables narrow the adapter decision and do not
 bypass Hermes global authorization.
 
-## 7. Current limitations
+## 7. Current status and limitations
 
 - Text and text chunking are implemented.
-- Media upload/download is not enabled in this MVP.
-- Callback approval buttons are not yet wired to Hermes resolvers.
+- Inbound media is cached locally through Hermes; outbound `MEDIA:` files use
+  the current MAX `/uploads` and `payload.token` contract.
+- Media has contract tests but still needs disposable-bot acceptance.
+- Callback approval buttons are wired to Hermes resolvers.
 - Streaming edits are present as an adapter API but require rate-limit and
   message-age integration tests before production use.
 - Store availability and whitelist behavior require a dated operator/region

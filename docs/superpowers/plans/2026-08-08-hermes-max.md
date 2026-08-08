@@ -19,9 +19,9 @@ Completed in the external plugin repository:
 - Webhook secret validation, durable SQLite inbox, bounded wake-up queue, deduplication, adapter `handle_webhook()` ingress seam, and standalone uvicorn ingress.
 - TLS policy that refuses disabled verification and supports a deployment-managed CA bundle.
 - MAX `link.mid` reply payload, persistent target type, and global/per-dialog rate limiter.
-- 60 local tests and a read-only Hermes loader import/register smoke test.
+- 94 local tests and a read-only Hermes loader import/register smoke test.
 
-Not yet production-ready: media, callback resolver wiring, streaming edit coalescing/message-age handling, subscription health metrics, and no-VPN field validation. These remain release gates below.
+Not yet release-ready: disposable-bot media acceptance, streaming edit coalescing/message-age handling, subscription health metrics, and no-VPN field validation. The media contract and callback resolver wiring are implemented and covered by local tests.
 
 ## Global Constraints
 
@@ -177,22 +177,22 @@ Not yet production-ready: media, callback resolver wiring, streaming edit coales
 
 ### Task 4.1: Incoming media
 
-- [ ] Parse MAX attachments into a normalized Hermes media event.
-- [ ] Download through the authenticated MAX client with size/type limits.
-- [ ] Store through the existing Hermes media cache.
+- [x] Parse MAX attachments into a normalized Hermes media event.
+- [x] Download through a bounded MAX media client with size/type limits and no CDN token leakage.
+- [x] Store through the existing Hermes media cache.
 - [ ] Convert audio/voice to the format expected by the existing STT pipeline.
-- [ ] Reject unsupported or oversized media with a user-safe message.
+- [x] Reject unsupported or oversized media with an agent-visible, user-safe note.
 
-**Verification:** Image, audio, and file receive tests prove cache persistence, MIME/size validation, and cleanup on failure.
+**Verification:** Local image/audio/file shape, MIME/size and cache mapping tests pass; disposable-bot acceptance remains open.
 
 ### Task 4.2: Outgoing media
 
-- [ ] Upload through `/uploads` with the correct `type`.
-- [ ] Wait/retry if MAX reports the attachment is not ready.
-- [ ] Send attachment metadata through the message endpoint.
-- [ ] Keep media errors independent from the text response path.
+- [x] Upload through `/uploads` with the correct `type`.
+- [x] Wait/retry if MAX reports the attachment is not ready.
+- [x] Send attachment metadata through the message endpoint, including standalone sender parity.
+- [x] Keep media errors independent from the text response path.
 
-**Verification:** Disposable-bot tests cover image, audio, file, upload timeout, and attachment-not-ready retry.
+**Verification:** Mocked current API tests cover upload shape, token attachment, CDN auth isolation and retry path; disposable-bot tests remain open.
 
 ### Task 4.3: Voice parity
 

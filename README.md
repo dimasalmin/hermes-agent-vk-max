@@ -34,10 +34,15 @@ interactive controls:
 - Opaque, short-lived, single-use callback state bound to the MAX user and
   chat. Group prompts fall back to text unless Hermes provides a user-bound
   control metadata value.
+- Bounded inbound media downloads into Hermes' existing media cache and
+  outbound `MEDIA:` uploads through the current MAX `/uploads` token flow.
+- Configurable `MAX_MEDIA_MAX_BYTES` limit (50 MiB by default) and CDN URL
+  host allowlist; the bot token is not sent to signed media URLs.
 - TLS verification with an optional deployment-managed `MAX_CA_BUNDLE`.
 
-Media upload and streaming edits remain separate release gates. The optional
-Webhook ingress is a separate process and is not embedded in the Hermes gateway.
+Media is covered by contract tests but still needs disposable-bot acceptance.
+Streaming edits remain a separate release gate. The optional Webhook ingress is
+a separate process and is not embedded in the Hermes gateway.
 
 ## Development
 
@@ -80,6 +85,8 @@ At minimum:
 ```env
 MAX_BOT_TOKEN=<token from MAX for Business>
 MAX_ALLOWED_USERS=<numeric MAX user ids separated by commas>
+# Optional; 50 MiB default for each inbound or outbound attachment.
+MAX_MEDIA_MAX_BYTES=52428800
 # Optional; defaults to 600 seconds and is intentionally in-memory only.
 MAX_CALLBACK_TTL_SECONDS=600
 ```

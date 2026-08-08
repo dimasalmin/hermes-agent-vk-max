@@ -10,6 +10,11 @@
 
 **Текущий прототип не следует считать готовым плагином.** Его 29 тестов проходят, однако аудит показал несовместимости с текущими правилами плагинов Hermes и с актуальным API MAX. Реализацию нужно продолжать как внешний плагин, не изменяя грязное рабочее дерево Hermes core.
 
+Отдельный аудит готовых MAX-плагинов MaZzZilka и pavel_botolog зафиксирован в
+[docs/analysis/2026-08-08-third-party-max-plugins.md](2026-08-08-third-party-max-plugins.md).
+Оба проекта дали полезные operational patterns, но не являются источником
+кода для прямого переноса: их media/API-контракт устарел или не реализован.
+
 ## 2. Что подтверждено, а что пока нельзя утверждать
 
 ### Подтверждено
@@ -319,6 +324,8 @@ Community articles are used as operational evidence and warnings, not as normati
 - MAX reply link with official `link.mid` field and conservative global/per-chat
   rate limiter;
 - TLS policy, запрещающая отключение проверки сертификатов;
+- bounded inbound media cache and outbound `/uploads` token delivery for
+  image/audio/video/file attachments;
 - read-only loader smoke script and upgrade/rollback runbook.
 
 Live evidence on 2026-08-08: with the official Russian CA bundle supplied per
@@ -329,19 +336,20 @@ Hermes adapter connected and disconnected successfully in a disposable
 collector smoke without invoking the model. The active gateway was not
 restarted and the token was not written to repository or service files.
 
-Проверки после изменений: **60 тестов проходят**; отдельный импорт и регистрация
+Проверки после изменений: **94 теста проходят**; отдельный импорт и регистрация
 через loader-style smoke на реальном Hermes v0.20.0 проходят:
 `plugin_import=ok`, `platform_name=max`, `writes_hermes_core=no`. Hermes core,
 его конфигурация, systemd units and active gateway were not modified.
 
 Current limitations are explicit: no HTTP listener inside Hermes itself (the
-separate ingress is available), no media upload/download, no streaming edit
-coalescing/message-age policy, no subscription health/reconciliation metrics,
-and no complete manual UI callback acceptance record yet. The native callback
-resolver and `/model` picker are implemented in the external plugin, but the
-live gate still requires a real user click and replay/timeout evidence. Поэтому
-это text MVP / integration foundation, not yet a production-ready channel.
+separate ingress is available), no streaming edit coalescing/message-age
+policy, no subscription health/reconciliation metrics, and no complete manual
+UI callback/media acceptance record yet. The native callback resolver,
+`/model` picker and media transport are implemented in the external plugin,
+but the live gate still requires real user clicks, disposable-bot media tests,
+replay/timeout evidence and field validation. Поэтому это integration
+foundation, not yet a production-ready channel.
 
 ## 13. Итог
 
-Начинаем с MAX, но делаем не одноразовый SDK wrapper, а upgrade-safe внешний Hermes plugin с нормализованным channel contract. Первый технический результат должен быть не «бот отвечает в MAX», а воспроизводимый contract smoke: Hermes discovers plugin, MAX API passes TLS and `/me`, Webhook reliably ACKs and queues events, allowlist protects the user, and one text turn reaches the existing Hermes session and returns exactly once. Только после этого добавляем media, callbacks, voice and incident mode.
+Начинаем с MAX, но делаем не одноразовый SDK wrapper, а upgrade-safe внешний Hermes plugin с нормализованным channel contract. Первый технический результат должен быть не «бот отвечает в MAX», а воспроизводимый contract smoke: Hermes discovers plugin, MAX API passes TLS and `/me`, Webhook reliably ACKs and queues events, allowlist protects the user, and one text turn reaches the existing Hermes session and returns exactly once. Media и callbacks уже имеют локальный contract implementation; следующими release gates остаются disposable-bot acceptance, voice, streaming UX, incident mode и no-VPN field validation.

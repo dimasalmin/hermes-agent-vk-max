@@ -79,3 +79,8 @@ optional_env:
     prompt: "MAX button callback TTL"
     password: false
     category: messaging
+  - name: MAX_MEDIA_MAX_BYTES
+    description: "Maximum size of one inbound or outbound media attachment"
+    prompt: "MAX media size limit in bytes"
+    password: false
+    category: messaging

@@ -75,9 +75,14 @@ except ImportError:  # pragma: no cover - used only by standalone unit tests
     )
     SendResult = _FallbackSendResult  # type: ignore[assignment]
 
-from .client import DEFAULT_API_BASE, MaxApiError, MaxClient
+from .client import DEFAULT_API_BASE, DEFAULT_MEDIA_MAX_BYTES, MaxApiError, MaxClient
 from .common import AccessPolicy, split_message
 from .interactive import MaxCallbackStore, build_inline_keyboard
+from .media import (
+    attachment_from_payload,
+    media_type_for_file,
+    mime_type_for_file,
+)
 from .models import MaxCallback, MaxMessage
 from .polling_state import MaxTargetStore, PollingMarkerStore
 from .rate_limit import MAX_MESSAGE_LENGTH, MaxRateLimiter, with_backoff
@@ -118,6 +123,22 @@ def _retry_after(exc: BaseException) -> Optional[float]:
         return None
 
 
+def _is_media_send_retryable(exc: BaseException) -> bool:
+    return _is_max_rate_limit(exc) or getattr(exc, "code", None) in {
+        "attachment.not.ready",
+        "attachment_not_ready",
+    }
+
+
+def _media_retry_after(exc: BaseException) -> Optional[float]:
+    retry_after = _retry_after(exc)
+    if retry_after is not None:
+        return retry_after
+    if getattr(exc, "code", None) in {"attachment.not.ready", "attachment_not_ready"}:
+        return 1.0
+    return None
+
+
 def _message_type(message: MaxMessage) -> Any:
     if _is_command(message.text):
         return getattr(MessageType, "COMMAND", getattr(MessageType, "TEXT", None))
@@ -125,7 +146,7 @@ def _message_type(message: MaxMessage) -> Any:
         kind = str(attachment.get("type") or "").lower()
         if kind == "image":
             return getattr(MessageType, "PHOTO", getattr(MessageType, "TEXT", None))
-        if kind == "audio":
+        if kind in {"audio", "voice"}:
             return getattr(MessageType, "VOICE", getattr(MessageType, "TEXT", None))
         if kind in {"video", "file"}:
             return getattr(MessageType, "DOCUMENT", getattr(MessageType, "TEXT", None))
@@ -146,7 +167,41 @@ def _reply_link(reply_to: Optional[str]) -> Optional[dict[str, str]]:
     return {"type": "reply", "mid": str(reply_to)} if reply_to else None
 
 
-def _build_message_event(adapter: "MaxAdapter", message: MaxMessage) -> Any:
+def _append_event_note(existing: Optional[str], note: str) -> str:
+    if not note:
+        return existing or ""
+    if not existing:
+        return note
+    return f"{existing}\n\n{note}"
+
+
+def _cache_media_bytes(
+    data: bytes,
+    *,
+    filename: str,
+    mime_type: str,
+    default_kind: str,
+) -> Any:
+    """Delegate media persistence to Hermes without importing it at module load."""
+
+    from gateway.platforms.base import cache_media_bytes
+
+    return cache_media_bytes(
+        data,
+        filename=filename,
+        mime_type=mime_type,
+        default_kind=default_kind,
+    )
+
+
+def _build_message_event(
+    adapter: "MaxAdapter",
+    message: MaxMessage,
+    *,
+    text: Optional[str] = None,
+    media_urls: Optional[List[str]] = None,
+    media_types: Optional[List[str]] = None,
+) -> Any:
     """Translate a normalized MAX message through Hermes' public contract."""
 
     chat_type = "group" if message.is_group else "dm"
@@ -160,14 +215,14 @@ def _build_message_event(adapter: "MaxAdapter", message: MaxMessage) -> Any:
         role_authorized=False,
     )
     return MessageEvent(
-        text=message.text,
+        text=message.text if text is None else text,
         message_type=_message_type(message),
         source=source,
         raw_message=message.raw_message,
         message_id=message.message_id,
         reply_to_message_id=_reply_message_id(message.link),
-        media_urls=[],
-        media_types=[],
+        media_urls=list(media_urls or []),
+        media_types=list(media_types or []),
         metadata={
             "max_chat_type": message.chat_type,
             "max_user_id": message.user_id,
@@ -282,6 +337,17 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             callback_ttl = 600.0
         self._callbacks = MaxCallbackStore(ttl_seconds=callback_ttl)
         self._model_pickers: dict[str, dict[str, Any]] = {}
+        try:
+            self._media_max_bytes = int(
+                self._extra.get(
+                    "media_max_bytes",
+                    os.environ.get("MAX_MEDIA_MAX_BYTES", str(DEFAULT_MEDIA_MAX_BYTES)),
+                )
+            )
+        except (TypeError, ValueError):
+            self._media_max_bytes = DEFAULT_MEDIA_MAX_BYTES
+        if self._media_max_bytes <= 0:
+            self._media_max_bytes = DEFAULT_MEDIA_MAX_BYTES
         self._lock_acquired = False
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -445,6 +511,65 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             return WebhookResult(status_code=503, accepted=False)
         return await self._receiver.receive(headers, update)
 
+    async def _populate_message_media(self, message: MaxMessage, event: Any) -> None:
+        """Download inbound MAX attachments into Hermes' local media cache."""
+
+        if self._client is None:
+            return
+        for raw_attachment in message.attachments:
+            attachment = attachment_from_payload(raw_attachment)
+            if attachment is None:
+                continue
+            if not attachment.url:
+                event.text = _append_event_note(
+                    event.text,
+                    f"[MAX attachment '{attachment.filename}' has no downloadable URL.]",
+                )
+                continue
+            try:
+                data, remote_mime = await self._client.download_media(
+                    attachment.url,
+                    max_bytes=getattr(self, "_media_max_bytes", DEFAULT_MEDIA_MAX_BYTES),
+                )
+                cached = _cache_media_bytes(
+                    data,
+                    filename=attachment.filename,
+                    mime_type=remote_mime or attachment.mime_type,
+                    default_kind=attachment.kind,
+                )
+            except (MaxApiError, OSError, ValueError) as exc:
+                logger.warning(
+                    "MAX media download/cache failed kind=%s error=%s",
+                    attachment.kind,
+                    exc,
+                )
+                event.text = _append_event_note(
+                    event.text,
+                    f"[MAX attachment '{attachment.filename}' could not be downloaded.]",
+                )
+                continue
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "MAX media cache failed kind=%s",
+                    attachment.kind,
+                )
+                event.text = _append_event_note(
+                    event.text,
+                    f"[MAX attachment '{attachment.filename}' could not be cached.]",
+                )
+                continue
+
+            if cached is None:
+                event.text = _append_event_note(
+                    event.text,
+                    f"[MAX attachment '{attachment.filename}' was not recognized as readable media.]",
+                )
+                continue
+            event.media_urls.append(cached.path)
+            event.media_types.append(cached.media_type)
+            event.text = _append_event_note(event.text, cached.context_note())
+            logger.info("MAX inbound media cached kind=%s", attachment.kind)
+
     async def _dispatch_update(self, update: Mapping[str, Any]) -> None:
         callback = MaxCallback.from_update(update)
         if callback is not None:
@@ -474,7 +599,9 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             message.user_id, message.text, is_group=is_group
         ):
             return
-        await self.handle_message(_build_message_event(self, message))
+        event = _build_message_event(self, message)
+        await self._populate_message_media(message, event)
+        await self.handle_message(event)
 
     async def _dispatch_callback(self, callback: MaxCallback) -> None:
         """Resolve a MAX button through Hermes' native interactive hooks."""
@@ -787,10 +914,19 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             return SendResult(success=False, error="MAX adapter is not connected")
         if not content:
             return SendResult(success=False, error="MAX message is empty")
-        if "MEDIA:" in content:
+        media_files, cleaned_content = self._extract_outbound_media(content)
+        if media_files:
+            return await self._send_media_files(
+                chat_id,
+                cleaned_content,
+                media_files,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        if "MEDIA:" in content and not callable(getattr(self, "extract_media", None)):
             return SendResult(
                 success=False,
-                error="MAX media sending is not enabled in the text MVP",
+                error="MAX media extraction is unavailable in this Hermes runtime",
                 retryable=False,
             )
 
@@ -813,6 +949,92 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
                     _send,
                     is_rate_limit=_is_max_rate_limit,
                     extract_retry_after=_retry_after,
+                )
+            except MaxApiError as exc:
+                return SendResult(
+                    success=False,
+                    error=str(exc),
+                    retryable=exc.retryable,
+                    retry_after=exc.retry_after,
+                )
+            message_id = _response_message_id(response)
+            if message_id:
+                message_ids.append(message_id)
+        return _send_result_from_ids(message_ids)
+
+    def _extract_outbound_media(self, content: str) -> tuple[list, str]:
+        if "MEDIA:" not in content:
+            return [], content
+        extractor = getattr(self, "extract_media", None)
+        if not callable(extractor):
+            return [], content
+        try:
+            media_files, cleaned = extractor(content)
+            filter_paths = getattr(self, "filter_media_delivery_paths", None)
+            if callable(filter_paths):
+                media_files = filter_paths(media_files)
+            return list(media_files or []), str(cleaned or "")
+        except Exception:  # noqa: BLE001
+            logger.exception("MAX outbound media extraction failed")
+            return [], content
+
+    async def _send_media_files(
+        self,
+        chat_id: str,
+        content: str,
+        media_files: list,
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        if self._client is None:
+            return SendResult(success=False, error="MAX adapter is not connected")
+        target_type = self._target_type_for(chat_id, metadata)
+        attachments: list[Mapping[str, Any]] = []
+        try:
+            for item in media_files:
+                if isinstance(item, (tuple, list)):
+                    media_path = str(item[0])
+                    is_voice = bool(item[1]) if len(item) > 1 else False
+                else:
+                    media_path = str(item)
+                    is_voice = False
+                media_type = media_type_for_file(media_path, is_voice=is_voice)
+                upload = await self._client.upload_media(
+                    media_path,
+                    media_type=media_type,
+                    max_bytes=getattr(self, "_media_max_bytes", DEFAULT_MEDIA_MAX_BYTES),
+                    mime_type=mime_type_for_file(media_path, media_type),
+                )
+                token = str(upload.get("token") or "").strip()
+                if not token:
+                    raise MaxApiError("MAX media upload returned no attachment token")
+                attachments.append({"type": media_type, "payload": {"token": token}})
+        except (MaxApiError, OSError, ValueError) as exc:
+            return SendResult(success=False, error=str(exc), retryable=bool(getattr(exc, "retryable", False)))
+
+        chunks = split_message(content, MAX_MESSAGE_LENGTH) if content else [""]
+        message_ids: list[str] = []
+        for index, chunk in enumerate(chunks):
+            await self._rate_limiter.acquire(chat_id)
+            link = _reply_link(reply_to) if index == 0 else None
+            chunk_attachments = attachments if index == 0 else None
+
+            async def _send() -> Mapping[str, Any]:
+                return await self._client.send_message(
+                    chat_id,
+                    chunk,
+                    target_type=target_type,
+                    link=link,
+                    attachments=chunk_attachments,
+                )
+
+            try:
+                response = await with_backoff(
+                    _send,
+                    is_rate_limit=_is_media_send_retryable,
+                    extract_retry_after=_media_retry_after,
+                    max_attempts=5,
                 )
             except MaxApiError as exc:
                 return SendResult(
@@ -1165,6 +1387,7 @@ def apply_yaml_config(_yaml_cfg: dict, platform_cfg: dict) -> dict[str, Any]:
         "webhook_secret": "MAX_WEBHOOK_SECRET",
         "ca_bundle": "MAX_CA_BUNDLE",
         "callback_ttl_seconds": "MAX_CALLBACK_TTL_SECONDS",
+        "media_max_bytes": "MAX_MEDIA_MAX_BYTES",
         "require_mention": "MAX_REQUIRE_MENTION",
         "allow_from": "MAX_ALLOWED_USERS",
         "group_allow_from": "MAX_GROUP_ALLOWED_USERS",
@@ -1182,6 +1405,7 @@ def apply_yaml_config(_yaml_cfg: dict, platform_cfg: dict) -> dict[str, Any]:
             "webhook_secret",
             "ca_bundle",
             "callback_ttl_seconds",
+            "media_max_bytes",
             "require_mention",
         }:
             result[key] = os.environ.get(env_name, value) if env_name else value
@@ -1199,9 +1423,7 @@ async def standalone_send(
     media_files: Optional[List[str]] = None,
     force_document: bool = False,
 ) -> Dict[str, Any]:
-    del thread_id, force_document
-    if media_files:
-        return {"error": "MAX standalone media sending is not enabled in the text MVP"}
+    del thread_id
     token = str(getattr(pconfig, "token", None) or os.environ.get("MAX_BOT_TOKEN", "")).strip()
     if not token:
         return {"error": "MAX_BOT_TOKEN is not configured"}
@@ -1226,9 +1448,43 @@ async def standalone_send(
                 target_type = target_store.get(str(chat_id)) or target_type
             finally:
                 target_store.close()
+            try:
+                media_max_bytes = int(
+                    extra.get(
+                        "media_max_bytes",
+                        os.environ.get("MAX_MEDIA_MAX_BYTES", str(DEFAULT_MEDIA_MAX_BYTES)),
+                    )
+                )
+            except (TypeError, ValueError):
+                media_max_bytes = DEFAULT_MEDIA_MAX_BYTES
+            attachments: list[Mapping[str, Any]] = []
+            for media_path in media_files or []:
+                path = str(media_path)
+                media_type = media_type_for_file(path, force_document=force_document)
+                upload = await client.upload_media(
+                    path,
+                    media_type=media_type,
+                    max_bytes=media_max_bytes,
+                    mime_type=mime_type_for_file(path, media_type),
+                )
+                token_value = str(upload.get("token") or "").strip()
+                if not token_value:
+                    raise MaxApiError("MAX media upload returned no attachment token")
+                attachments.append({"type": media_type, "payload": {"token": token_value}})
             last_id = None
-            for chunk in split_message(message, MAX_MESSAGE_LENGTH):
-                response = await client.send_message(str(chat_id), chunk, target_type=target_type)
+            chunks = split_message(message, MAX_MESSAGE_LENGTH) if message else [""]
+            for index, chunk in enumerate(chunks):
+                response = await with_backoff(
+                    lambda: client.send_message(
+                        str(chat_id),
+                        chunk,
+                        target_type=target_type,
+                        attachments=attachments if index == 0 else None,
+                    ),
+                    is_rate_limit=_is_media_send_retryable,
+                    extract_retry_after=_media_retry_after,
+                    max_attempts=5,
+                )
                 last_id = _response_message_id(response)
             return {"success": True, "platform": PLATFORM_NAME, "chat_id": str(chat_id), "message_id": last_id}
         finally:
