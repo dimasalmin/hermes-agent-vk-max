@@ -12,11 +12,13 @@ import asyncio
 import inspect
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from secrets import token_urlsafe
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Mapping, Optional
+from urllib.parse import unquote, urlsplit
 
 try:
     from gateway.config import Platform, PlatformConfig
@@ -34,6 +36,7 @@ except ImportError:  # pragma: no cover - used only by standalone unit tests
         source: Any = None
         raw_message: Any = None
         message_id: Optional[str] = None
+        reply_to_message_id: Optional[str] = None
         media_urls: List[str] = None
         media_types: List[str] = None
         metadata: Dict[str, Any] = None
@@ -47,6 +50,7 @@ except ImportError:  # pragma: no cover - used only by standalone unit tests
         retryable: bool = False
         retry_after: Optional[float] = None
         continuation_message_ids: tuple = ()
+        error_kind: Optional[str] = None
 
     class _FallbackBase:
         def __init__(self, config: Any, platform: Any) -> None:
@@ -71,7 +75,8 @@ except ImportError:  # pragma: no cover - used only by standalone unit tests
     PlatformConfig = Any  # type: ignore[assignment,misc]
     MessageEvent = _FallbackMessageEvent  # type: ignore[assignment]
     MessageType = SimpleNamespace(
-        TEXT="text", COMMAND="command", PHOTO="photo", VOICE="voice", DOCUMENT="document"
+        TEXT="text", COMMAND="command", PHOTO="photo", VIDEO="video", AUDIO="audio",
+        VOICE="voice", DOCUMENT="document"
     )
     SendResult = _FallbackSendResult  # type: ignore[assignment]
 
@@ -79,13 +84,16 @@ from .client import DEFAULT_API_BASE, DEFAULT_MEDIA_MAX_BYTES, MaxApiError, MaxC
 from .common import AccessPolicy, split_message
 from .interactive import MaxCallbackStore, build_inline_keyboard
 from .media import (
+    OUTBOUND_MEDIA_HOSTS,
     attachment_from_payload,
+    is_allowed_outbound_media_url,
     media_type_for_file,
     mime_type_for_file,
 )
 from .models import MaxCallback, MaxMessage
 from .polling_state import MaxTargetStore, PollingMarkerStore
 from .rate_limit import MAX_MESSAGE_LENGTH, MaxRateLimiter, with_backoff
+from .rate_limit import MAX_ATTACHMENTS_PER_MESSAGE
 from .tls import tls_verify_from_env
 from .webhook import MaxWebhookReceiver, WebhookResult
 
@@ -106,6 +114,14 @@ MAX_UPDATE_TYPES = (
     "bot_stopped",
     "dialog_removed",
 )
+GROUP_ADMIN_COMMANDS = frozenset(
+    {
+        "new", "stop", "model", "compress", "undo", "rollback", "sethome",
+        "restart", "approve", "deny", "background", "queue", "resume",
+    }
+)
+GROUP_ADMIN_CALLBACKS = frozenset({"approval", "slash", "model"})
+GROUP_SESSION_SEPARATOR = "::user::"
 
 
 def _is_max_rate_limit(exc: BaseException) -> bool:
@@ -139,6 +155,44 @@ def _media_retry_after(exc: BaseException) -> Optional[float]:
     return None
 
 
+def _is_retryable_media_error(exc: BaseException) -> bool:
+    return _is_media_send_retryable(exc) or bool(getattr(exc, "retryable", False))
+
+
+def _safe_https_url(value: str) -> bool:
+    try:
+        parsed = urlsplit(str(value).strip())
+        if parsed.scheme.lower() != "https" or not parsed.hostname:
+            return False
+        if parsed.username or parsed.password:
+            return False
+        return parsed.port in (None, 443)
+    except ValueError:
+        return False
+
+
+def _find_download_url(value: Any) -> Optional[str]:
+    """Find a URL in GET /videos/{token} response without accepting tokens."""
+
+    if isinstance(value, str) and _safe_https_url(value):
+        return value
+    if isinstance(value, Mapping):
+        for key in ("url", "download_url", "mp4", "stream", "download"):
+            found = _find_download_url(value.get(key))
+            if found:
+                return found
+        for nested in value.values():
+            found = _find_download_url(nested)
+            if found:
+                return found
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            found = _find_download_url(nested)
+            if found:
+                return found
+    return None
+
+
 def _message_type(message: MaxMessage) -> Any:
     if _is_command(message.text):
         return getattr(MessageType, "COMMAND", getattr(MessageType, "TEXT", None))
@@ -147,8 +201,11 @@ def _message_type(message: MaxMessage) -> Any:
         if kind == "image":
             return getattr(MessageType, "PHOTO", getattr(MessageType, "TEXT", None))
         if kind in {"audio", "voice"}:
-            return getattr(MessageType, "VOICE", getattr(MessageType, "TEXT", None))
-        if kind in {"video", "file"}:
+            message_kind = "VOICE" if kind == "voice" else "AUDIO"
+            return getattr(MessageType, message_kind, getattr(MessageType, "VOICE", getattr(MessageType, "TEXT", None)))
+        if kind == "video":
+            return getattr(MessageType, "VIDEO", getattr(MessageType, "DOCUMENT", getattr(MessageType, "TEXT", None)))
+        if kind == "file":
             return getattr(MessageType, "DOCUMENT", getattr(MessageType, "TEXT", None))
     return getattr(MessageType, "TEXT", None)
 
@@ -205,8 +262,11 @@ def _build_message_event(
     """Translate a normalized MAX message through Hermes' public contract."""
 
     chat_type = "group" if message.is_group else "dm"
+    session_chat_id = message.chat_id
+    if message.is_group:
+        session_chat_id = f"{message.chat_id}{GROUP_SESSION_SEPARATOR}{message.user_id}"
     source = adapter.build_source(
-        chat_id=message.chat_id,
+        chat_id=session_chat_id,
         chat_name=message.chat_title or message.user_name,
         chat_type=chat_type,
         user_id=message.user_id,
@@ -225,6 +285,8 @@ def _build_message_event(
         media_types=list(media_types or []),
         metadata={
             "max_chat_type": message.chat_type,
+            "max_chat_id": message.chat_id,
+            "max_target_type": "chat" if message.is_group else "user",
             "max_user_id": message.user_id,
         },
     )
@@ -232,6 +294,21 @@ def _build_message_event(
 
 def _is_command(text: str) -> bool:
     return bool(text) and text.lstrip().startswith("/")
+
+
+def _command_name(text: str) -> str:
+    if not _is_command(text):
+        return ""
+    return text.lstrip().split(None, 1)[0].split("@", 1)[0].lstrip("/").lower()
+
+
+def _transport_chat_id(
+    chat_id: str,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> str:
+    if metadata and metadata.get("max_chat_id"):
+        return str(metadata["max_chat_id"])
+    return str(chat_id).split(GROUP_SESSION_SEPARATOR, 1)[0]
 
 
 def _response_message_id(response: Mapping[str, Any]) -> Optional[str]:
@@ -297,6 +374,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             group_allowed_chats_env=os.environ.get("MAX_GROUP_ALLOWED_CHATS"),
             allow_all_env=os.environ.get("MAX_ALLOW_ALL_USERS"),
             guest_mode_env=os.environ.get("MAX_GUEST_MODE"),
+            admin_users_env=os.environ.get("MAX_ADMIN_USERS"),
             extra=self._extra,
         )
         self._require_mention = _truthy(
@@ -337,6 +415,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             callback_ttl = 600.0
         self._callbacks = MaxCallbackStore(ttl_seconds=callback_ttl)
         self._model_pickers: dict[str, dict[str, Any]] = {}
+        self._last_group_users: dict[str, tuple[str, float]] = {}
         try:
             self._media_max_bytes = int(
                 self._extra.get(
@@ -348,6 +427,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             self._media_max_bytes = DEFAULT_MEDIA_MAX_BYTES
         if self._media_max_bytes <= 0:
             self._media_max_bytes = DEFAULT_MEDIA_MAX_BYTES
+        self._media_max_bytes = min(self._media_max_bytes, DEFAULT_MEDIA_MAX_BYTES)
         self._lock_acquired = False
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -367,6 +447,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             bot = await self._client.get_me()
             self._bot_user_id = str(bot.get("user_id") or bot.get("id") or "") or None
             self._bot_username = str(bot.get("username") or "") or None
+            await self._register_commands()
             self._running = True
             self._target_store = MaxTargetStore(self._target_path)
 
@@ -438,22 +519,109 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
         except AttributeError:
             pass
 
+    def _max_commands(self) -> list[dict[str, str]]:
+        """Build a bounded menu from the installed Hermes command registry."""
+
+        descriptions = {
+            "menu": "Показать кнопки Hermes",
+            "maxstatus": "Состояние очереди MAX",
+            "help": "Список доступных команд",
+            "status": "Статус сессии и модели",
+            "new": "Новая сессия",
+            "stop": "Остановить фоновые задачи",
+            "model": "Выбрать модель",
+            "compress": "Сжать контекст",
+            "sessions": "Предыдущие сессии",
+            "resume": "Возобновить сессию",
+            "retry": "Повторить последнее сообщение",
+            "undo": "Отменить последний ход",
+            "agents": "Активные задачи",
+            "queue": "Поставить запрос в очередь",
+            "background": "Запустить в фоне",
+            "whoami": "Проверить доступ",
+        }
+        preferred = [
+            "menu", "help", "status", "new", "stop", "model", "compress",
+            "sessions", "resume", "retry", "undo", "agents", "whoami",
+            "queue", "background", "maxstatus",
+        ]
+        registry: dict[str, Any] = {}
+        try:
+            from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available
+
+            for item in COMMAND_REGISTRY:
+                if getattr(item, "cli_only", False):
+                    continue
+                if not _is_gateway_available(item):
+                    continue
+                registry[str(item.name).lower()] = item
+        except Exception:  # pragma: no cover - only for reduced standalone runtimes
+            registry = {}
+
+        result: list[dict[str, str]] = []
+        for name in preferred:
+            if name == "menu" or name == "maxstatus":
+                result.append({"name": name, "description": descriptions[name]})
+                continue
+            item = registry.get(name)
+            if item is None:
+                continue
+            result.append(
+                {
+                    "name": name,
+                    "description": descriptions.get(name, str(item.description)),
+                }
+            )
+        return result[:32]
+
+    async def _register_commands(self) -> None:
+        if self._client is None or not callable(getattr(self._client, "set_bot_commands", None)):
+            return
+        try:
+            await self._client.set_bot_commands(self._max_commands())
+        except (MaxApiError, ValueError) as exc:
+            # Menu registration is best effort.  A MAX API rollout must not
+            # disable text/media delivery when PATCH /me/commands is down.
+            logger.warning("MAX command menu registration failed: %s", exc)
+
     async def _poll_updates(self) -> None:
         marker: Optional[int] = self._marker_store.get() if self._marker_store else None
         backoff = 1.0
         while self._running and self._client is not None:
             try:
+                if self._marker_store is not None:
+                    pending = self._marker_store.claim_next()
+                    if pending is not None:
+                        try:
+                            await self._dispatch_update(pending)
+                        except Exception as exc:  # noqa: BLE001
+                            self._marker_store.mark_failed(pending, str(exc))
+                            logger.exception(
+                                "MAX polling update moved to failed state; "
+                                "automatic replay is disabled"
+                            )
+                        else:
+                            self._marker_store.mark_processed(pending)
+                        continue
                 result = await self._client.get_updates(
                     marker=marker,
                     timeout=self._polling_timeout,
                     types=MAX_UPDATE_TYPES,
                 )
-                marker = result.get("marker", marker)
-                if marker is not None and self._marker_store is not None:
-                    self._marker_store.set(int(marker))
+                next_marker = result.get("marker", marker)
+                updates = [
+                    item for item in (result.get("updates", []) or [])
+                    if isinstance(item, Mapping)
+                ]
+                if self._marker_store is not None:
+                    self._marker_store.accept_batch(
+                        updates,
+                        int(next_marker) if next_marker is not None else None,
+                    )
+                marker = int(next_marker) if next_marker is not None else marker
                 backoff = 1.0
-                for update in result.get("updates", []) or []:
-                    if isinstance(update, Mapping):
+                if self._marker_store is None:
+                    for update in updates:
                         await self._dispatch_update(update)
             except asyncio.CancelledError:
                 return
@@ -484,6 +652,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
                     update = pending[0]
                     from_queue = False
                 try:
+                    await self._receiver.mark_processing(update)
                     await self._dispatch_update(update)
                     await self._receiver.mark_processed(update)
                 except Exception:
@@ -520,15 +689,22 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             attachment = attachment_from_payload(raw_attachment)
             if attachment is None:
                 continue
-            if not attachment.url:
+            media_url = attachment.url
+            if not media_url and attachment.kind == "video" and attachment.token:
+                try:
+                    video_info = await self._client.get_video(attachment.token)
+                    media_url = _find_download_url(video_info)
+                except (MaxApiError, ValueError) as exc:
+                    logger.warning("MAX video token resolution failed: %s", exc)
+            if not media_url:
                 event.text = _append_event_note(
                     event.text,
-                    f"[MAX attachment '{attachment.filename}' has no downloadable URL.]",
+                    f"[Вложение MAX «{attachment.filename}» не удалось получить для обработки.]",
                 )
                 continue
             try:
                 data, remote_mime = await self._client.download_media(
-                    attachment.url,
+                    media_url,
                     max_bytes=getattr(self, "_media_max_bytes", DEFAULT_MEDIA_MAX_BYTES),
                 )
                 cached = _cache_media_bytes(
@@ -545,7 +721,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
                 )
                 event.text = _append_event_note(
                     event.text,
-                    f"[MAX attachment '{attachment.filename}' could not be downloaded.]",
+                    f"[Вложение MAX «{attachment.filename}» не удалось скачать: проверьте формат и размер.]",
                 )
                 continue
             except Exception:  # noqa: BLE001
@@ -555,14 +731,14 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
                 )
                 event.text = _append_event_note(
                     event.text,
-                    f"[MAX attachment '{attachment.filename}' could not be cached.]",
+                    f"[Вложение MAX «{attachment.filename}» не удалось сохранить для Hermes.]",
                 )
                 continue
 
             if cached is None:
                 event.text = _append_event_note(
                     event.text,
-                    f"[MAX attachment '{attachment.filename}' was not recognized as readable media.]",
+                    f"[Вложение MAX «{attachment.filename}» не распознано как читаемый файл.]",
                 )
                 continue
             event.media_urls.append(cached.path)
@@ -571,6 +747,12 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             logger.info("MAX inbound media cached kind=%s", attachment.kind)
 
     async def _dispatch_update(self, update: Mapping[str, Any]) -> None:
+        update_type = str(update.get("update_type") or "")
+        if update_type == "bot_started":
+            await self._dispatch_bot_started(update)
+            return
+        if update_type in {"bot_stopped", "dialog_removed"}:
+            return
         callback = MaxCallback.from_update(update)
         if callback is not None:
             await self._dispatch_callback(callback)
@@ -599,13 +781,85 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             message.user_id, message.text, is_group=is_group
         ):
             return
+        if is_group and _command_name(message.text) in GROUP_ADMIN_COMMANDS and not self._access.is_admin(message.user_id):
+            await self.send(
+                message.chat_id,
+                "Эта управляющая команда доступна только администратору группы.",
+                metadata={"max_target_type": "chat", "max_user_id": message.user_id},
+            )
+            return
+        self._remember_group_user(message.chat_id, message.user_id, is_group=is_group)
+        if await self._handle_local_command(message):
+            return
         event = _build_message_event(self, message)
         await self._populate_message_media(message, event)
         await self.handle_message(event)
 
+    async def _dispatch_bot_started(self, update: Mapping[str, Any]) -> None:
+        user = update.get("user") if isinstance(update.get("user"), Mapping) else {}
+        user_id = str(user.get("user_id") or user.get("id") or "").strip()
+        if not user_id:
+            return
+        chat_id = str(update.get("chat_id") or user_id).strip()
+        is_group = bool(update.get("is_channel")) or chat_id != user_id
+        if is_group:
+            if not self._access.can_group(user_id, chat_id, mentioned=True):
+                return
+            target_type = "chat"
+        else:
+            if not self._access.can_dm(user_id):
+                return
+            target_type = "user"
+        self._chat_target_types[chat_id] = target_type
+        if self._target_store is not None:
+            self._target_store.set(chat_id, target_type)
+        self._remember_group_user(chat_id, user_id, is_group=is_group)
+        await self._send_menu(
+            chat_id,
+            user_id,
+            target_type=target_type,
+            welcome=True,
+        )
+
+    def _remember_group_user(self, chat_id: str, user_id: str, *, is_group: bool) -> None:
+        if is_group:
+            if not hasattr(self, "_last_group_users"):
+                self._last_group_users = {}
+            self._last_group_users[str(chat_id)] = (str(user_id), time.monotonic())
+
+    async def _handle_local_command(self, message: MaxMessage) -> bool:
+        command = _command_name(message.text)
+        if command == "menu":
+            await self._send_menu(
+                message.chat_id,
+                message.user_id,
+                target_type="chat" if message.is_group else "user",
+            )
+            return True
+        if command == "maxstatus":
+            await self.send(
+                message.chat_id,
+                self._max_status_text(),
+                metadata={
+                    "max_target_type": "chat" if message.is_group else "user",
+                    "max_user_id": message.user_id,
+                },
+            )
+            return True
+        if command == "start":
+            await self._send_menu(
+                message.chat_id,
+                message.user_id,
+                target_type="chat" if message.is_group else "user",
+                welcome=True,
+            )
+            return True
+        return False
+
     async def _dispatch_callback(self, callback: MaxCallback) -> None:
         """Resolve a MAX button through Hermes' native interactive hooks."""
 
+        self._remember_group_user(callback.chat_id, callback.user_id, is_group=callback.is_group)
         if callback.is_group:
             authorized = self._access.can_group(
                 callback.user_id, callback.chat_id, mentioned=False
@@ -614,6 +868,22 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             authorized = self._access.can_dm(callback.user_id)
         if not authorized:
             await self._answer_callback(callback, "Нет доступа к этой кнопке.")
+            return
+
+        pending_entry = self._callbacks.peek(callback.payload)
+        if (
+            callback.is_group
+            and pending_entry is not None
+            and (
+                pending_entry.kind in GROUP_ADMIN_CALLBACKS
+                or (
+                    pending_entry.kind == "command"
+                    and pending_entry.value in GROUP_ADMIN_COMMANDS
+                )
+            )
+            and not self._access.is_admin(callback.user_id)
+        ):
+            await self._answer_callback(callback, "Это действие доступно только администратору группы.")
             return
 
         entry = self._callbacks.consume(
@@ -626,6 +896,36 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             return
 
         try:
+            if entry.kind == "command":
+                if (
+                    callback.is_group
+                    and entry.value in GROUP_ADMIN_COMMANDS
+                    and not self._access.is_admin(callback.user_id)
+                ):
+                    await self._answer_callback(
+                        callback,
+                        "Эта команда доступна только администратору группы.",
+                    )
+                    return
+                await self._answer_callback(callback, "Команда выполняется.")
+                command_message = MaxMessage(
+                    message_id=callback.message_id or f"callback:{callback.callback_id}",
+                    user_id=callback.user_id,
+                    user_name=callback.user_name,
+                    chat_id=callback.chat_id,
+                    chat_type=callback.chat_type,
+                    chat_title=None,
+                    text=f"/{entry.value}",
+                    link={"message_id": callback.message_id} if callback.message_id else None,
+                    raw_message=callback.raw_message,
+                )
+                if await self._handle_local_command(command_message):
+                    return
+                event = _build_message_event(self, command_message)
+                await self._populate_message_media(command_message, event)
+                await self.handle_message(event)
+                return
+
             if entry.kind == "approval":
                 from tools.approval import resolve_gateway_approval
 
@@ -825,14 +1125,105 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
     def _target_type_for(
         self, chat_id: str, metadata: Optional[Mapping[str, Any]] = None
     ) -> str:
-        target_type = self._chat_target_types.get(chat_id)
+        transport_chat_id = _transport_chat_id(chat_id, metadata)
+        target_type = self._chat_target_types.get(transport_chat_id)
         target_store = getattr(self, "_target_store", None)
         if target_type is None and target_store is not None:
-            target_type = target_store.get(chat_id)
+            target_type = target_store.get(transport_chat_id)
         target_type = target_type or "user"
         if metadata and metadata.get("max_target_type") in {"user", "chat"}:
             target_type = str(metadata["max_target_type"])
         return target_type
+
+    def _max_status_text(self) -> str:
+        transport = "webhook" if self._webhook_mode else "polling"
+        summary: Mapping[str, Any] = {}
+        if self._marker_store is not None:
+            summary = self._marker_store.status_summary()
+        elif self._receiver is not None:
+            summary = self._receiver.status_summary()
+        pending = int(summary.get("pending", 0) or 0)
+        processing = int(summary.get("processing", 0) or 0)
+        failed = int(summary.get("failed", 0) or 0)
+        last_error = str(summary.get("last_error") or "")
+        error_category = "нет"
+        if last_error:
+            lowered = last_error.lower()
+            if "429" in lowered or "rate" in lowered:
+                error_category = "rate limit"
+            elif "timeout" in lowered or "transport" in lowered:
+                error_category = "сеть/таймаут"
+            elif "media" in lowered or "attachment" in lowered:
+                error_category = "вложение"
+            elif "api" in lowered:
+                error_category = "api"
+            else:
+                error_category = "обработка"
+        return (
+            "**MAX: диагностика**\n\n"
+            f"Транспорт: `{transport}`\n"
+            f"Очередь: pending={pending}, processing={processing}, failed={failed}\n"
+            f"Последняя категория ошибки: `{error_category}`\n"
+            "Повторная обработка неоднозначных событий автоматически не выполняется."
+        )
+
+    async def _send_menu(
+        self,
+        chat_id: str,
+        user_id: str,
+        *,
+        target_type: str,
+        welcome: bool = False,
+    ) -> None:
+        if self._client is None:
+            return
+        label_map = {
+            "help": "Помощь",
+            "status": "Статус",
+            "new": "Новая сессия",
+            "model": "Модель",
+            "stop": "Остановить",
+            "compress": "Сжать контекст",
+            "maxstatus": "Диагностика MAX",
+        }
+        available = {item["name"] for item in self._max_commands()}
+        button_names = [
+            name for name in ("help", "status", "new", "model", "stop", "compress", "maxstatus")
+            if name in available
+        ]
+        rows: list[list[Mapping[str, str]]] = []
+        buttons: list[Mapping[str, str]] = []
+        for name in button_names:
+            bound_user = "*" if target_type == "chat" and name in GROUP_ADMIN_COMMANDS else str(user_id)
+            payload = self._callbacks.issue(
+                "command",
+                name,
+                user_id=bound_user,
+                chat_id=str(chat_id),
+                session_key="",
+            )
+            buttons.append({"type": "callback", "text": label_map[name], "payload": payload})
+        for index in range(0, len(buttons), 2):
+            rows.append(buttons[index : index + 2])
+        text = "Hermes готов к работе. Выберите действие:" if welcome else "Выберите действие:"
+        try:
+            await self._rate_limiter.acquire(str(chat_id))
+
+            async def _send() -> Mapping[str, Any]:
+                return await self._client.send_message(
+                    str(chat_id),
+                    text,
+                    target_type=target_type,
+                    attachments=[build_inline_keyboard(rows)] if rows else None,
+                )
+
+            await with_backoff(
+                _send,
+                is_rate_limit=_is_max_rate_limit,
+                extract_retry_after=_retry_after,
+            )
+        except MaxApiError as exc:
+            logger.warning("MAX menu delivery failed: %s", exc)
 
     def _interactive_context(
         self, chat_id: str, metadata: Optional[Mapping[str, Any]] = None
@@ -846,9 +1237,10 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
                     break
         if not user_id and target_type == "user":
             user_id = str(chat_id).strip()
-        # Hermes currently supplies no sender identity in the generic control
-        # metadata for group prompts.  Refuse native buttons there so a second
-        # authorized group member cannot approve another user's request.
+        if not user_id and target_type == "chat":
+            remembered = getattr(self, "_last_group_users", {}).get(str(chat_id))
+            if remembered and time.monotonic() - remembered[1] <= 600.0:
+                user_id = remembered[0]
         if not user_id:
             return None
         return target_type, user_id
@@ -866,19 +1258,20 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             return SendResult(success=False, error="MAX adapter is not connected")
         if not content:
             return SendResult(success=False, error="MAX message is empty")
+        transport_chat_id = _transport_chat_id(chat_id, metadata)
         context = self._interactive_context(chat_id, metadata)
         if context is None:
             return SendResult(
                 success=False,
-                error="MAX native buttons require a user-bound direct message",
+                error="MAX native buttons require a user-bound message",
             )
         target_type, _user_id = context
         try:
-            await self._rate_limiter.acquire(chat_id)
+            await self._rate_limiter.acquire(transport_chat_id)
 
             async def _send() -> Mapping[str, Any]:
                 return await self._client.send_message(
-                    chat_id,
+                    transport_chat_id,
                     content[:MAX_MESSAGE_LENGTH],
                     target_type=target_type,
                     link=_reply_link(reply_to),
@@ -903,6 +1296,328 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             raw_response=response,
         )
 
+    def _validated_media_path(self, file_path: str | Path) -> Optional[str]:
+        validator = getattr(self, "validate_media_delivery_path", None)
+        if callable(validator):
+            try:
+                safe_path = validator(str(file_path))
+            except (OSError, RuntimeError, ValueError):
+                return None
+            return str(safe_path) if safe_path else None
+        try:
+            path = Path(file_path).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            return None
+        return str(path) if path.is_file() else None
+
+    async def _send_local_attachment(
+        self,
+        chat_id: str,
+        file_path: str | Path,
+        *,
+        media_type: Optional[str] = None,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
+        force_document: bool = False,
+    ) -> Any:
+        if self._client is None:
+            return SendResult(success=False, error="MAX adapter is not connected")
+        transport_chat_id = _transport_chat_id(chat_id, metadata)
+        safe_path = self._validated_media_path(file_path)
+        if not safe_path:
+            return SendResult(success=False, error="MAX attachment path is not allowed")
+        actual_type = media_type or media_type_for_file(
+            safe_path, force_document=force_document
+        )
+        if actual_type not in {"image", "video", "audio", "file"}:
+            return SendResult(success=False, error="MAX attachment type is not supported")
+        try:
+            upload_kwargs: dict[str, Any] = {
+                "media_type": actual_type,
+                "max_bytes": getattr(self, "_media_max_bytes", DEFAULT_MEDIA_MAX_BYTES),
+                "mime_type": mime_type_for_file(safe_path, actual_type),
+            }
+            if file_name:
+                upload_kwargs["filename"] = str(file_name)
+            upload = await with_backoff(
+                lambda: self._client.upload_media(safe_path, **upload_kwargs),
+                is_rate_limit=_is_retryable_media_error,
+                extract_retry_after=_media_retry_after,
+                max_attempts=5,
+            )
+            token = str(upload.get("token") or "").strip()
+            if not token:
+                raise MaxApiError("MAX media upload returned no attachment token")
+            target_type = self._target_type_for(transport_chat_id, metadata)
+            attachment = {
+                "type": actual_type,
+                "payload": {"token": token},
+            }
+            await self._rate_limiter.acquire(transport_chat_id)
+
+            async def _send() -> Mapping[str, Any]:
+                return await self._client.send_message(
+                    transport_chat_id,
+                    str(caption or "")[:MAX_MESSAGE_LENGTH],
+                    target_type=target_type,
+                    link=_reply_link(reply_to),
+                    attachments=[attachment],
+                )
+
+            response = await with_backoff(
+                _send,
+                is_rate_limit=_is_media_send_retryable,
+                extract_retry_after=_media_retry_after,
+                max_attempts=5,
+            )
+        except (MaxApiError, OSError, ValueError) as exc:
+            return SendResult(
+                success=False,
+                error=str(exc),
+                retryable=bool(getattr(exc, "retryable", False)),
+                retry_after=getattr(exc, "retry_after", None),
+            )
+        return SendResult(
+            success=True,
+            message_id=_response_message_id(response),
+            raw_response=response,
+        )
+
+    async def _send_remote_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        *,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
+    ) -> Any:
+        if not _safe_https_url(image_url) or not is_allowed_outbound_media_url(image_url):
+            return SendResult(success=False, error="MAX image URL is not allowed")
+        if self._client is None:
+            return SendResult(success=False, error="MAX adapter is not connected")
+        transport_chat_id = _transport_chat_id(chat_id, metadata)
+        target_type = self._target_type_for(transport_chat_id, metadata)
+        try:
+            data, remote_mime = await self._client.download_media(
+                image_url,
+                max_bytes=getattr(self, "_media_max_bytes", DEFAULT_MEDIA_MAX_BYTES),
+                allowed_hosts=OUTBOUND_MEDIA_HOSTS,
+            )
+            filename = Path(urlsplit(image_url).path).name or "image.jpg"
+            upload = await with_backoff(
+                lambda: self._client.upload_media_bytes(
+                    data,
+                    filename=filename,
+                    media_type="image",
+                    max_bytes=getattr(self, "_media_max_bytes", DEFAULT_MEDIA_MAX_BYTES),
+                    mime_type=remote_mime if str(remote_mime).startswith("image/") else "image/jpeg",
+                ),
+                is_rate_limit=_is_retryable_media_error,
+                extract_retry_after=_media_retry_after,
+                max_attempts=5,
+            )
+            token = str(upload.get("token") or "").strip()
+            if not token:
+                raise MaxApiError("MAX media upload returned no attachment token")
+            attachment = {"type": "image", "payload": {"token": token}}
+            await self._rate_limiter.acquire(transport_chat_id)
+
+            async def _send() -> Mapping[str, Any]:
+                return await self._client.send_message(
+                    transport_chat_id,
+                    str(caption or "")[:MAX_MESSAGE_LENGTH],
+                    target_type=target_type,
+                    link=_reply_link(reply_to),
+                    attachments=[attachment],
+                )
+
+            response = await with_backoff(
+                _send,
+                is_rate_limit=_is_media_send_retryable,
+                extract_retry_after=_media_retry_after,
+                max_attempts=5,
+            )
+        except (MaxApiError, OSError, ValueError) as exc:
+            return SendResult(
+                success=False,
+                error=str(exc),
+                retryable=bool(getattr(exc, "retryable", False)),
+                retry_after=getattr(exc, "retry_after", None),
+            )
+        return SendResult(success=True, message_id=_response_message_id(response), raw_response=response)
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        value = str(image_url or "").strip()
+        if value.startswith("file://"):
+            return await self.send_image_file(
+                chat_id,
+                unquote(value[7:]),
+                caption=caption,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        if not urlsplit(value).scheme:
+            return await self.send_image_file(
+                chat_id,
+                value,
+                caption=caption,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        return await self._send_remote_image(
+            chat_id, value, caption=caption, reply_to=reply_to, metadata=metadata
+        )
+
+    async def send_animation(
+        self,
+        chat_id: str,
+        animation_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        return await self.send_image(
+            chat_id,
+            animation_url,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Any:
+        del kwargs
+        return await self._send_local_attachment(
+            chat_id,
+            image_path,
+            media_type="image",
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Any:
+        del kwargs
+        return await self._send_local_attachment(
+            chat_id,
+            file_path,
+            media_type="file",
+            caption=caption,
+            file_name=file_name,
+            reply_to=reply_to,
+            metadata=metadata,
+            force_document=True,
+        )
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Any:
+        del kwargs
+        return await self._send_local_attachment(
+            chat_id,
+            audio_path,
+            media_type="audio",
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Any:
+        del kwargs
+        return await self._send_local_attachment(
+            chat_id,
+            video_path,
+            media_type="video",
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    async def send_multiple_images(
+        self,
+        chat_id: str,
+        images: list[tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        if len(images) > MAX_ATTACHMENTS_PER_MESSAGE:
+            logger.warning("MAX image batch exceeds %d attachments", MAX_ATTACHMENTS_PER_MESSAGE)
+        for image_url, alt_text in list(images)[:MAX_ATTACHMENTS_PER_MESSAGE]:
+            if human_delay > 0:
+                await asyncio.sleep(human_delay)
+            result = await self.send_image(
+                chat_id,
+                image_url,
+                caption=alt_text or None,
+                metadata=metadata,
+            )
+            if not getattr(result, "success", False):
+                logger.warning("MAX image delivery failed: %s", getattr(result, "error", result))
+
+    async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        transport_chat_id = _transport_chat_id(chat_id, metadata)
+        if self._client is None:
+            return
+        try:
+            await self._rate_limiter.acquire(transport_chat_id)
+            await with_backoff(
+                lambda: self._client.send_action(transport_chat_id, "typing"),
+                is_rate_limit=_is_max_rate_limit,
+                extract_retry_after=_retry_after,
+            )
+        except (MaxApiError, ValueError) as exc:
+            logger.debug("MAX typing action failed: %s", exc)
+
+    async def stop_typing(self, chat_id: str) -> None:
+        transport_chat_id = _transport_chat_id(chat_id)
+        if self._client is None:
+            return
+        try:
+            await self._rate_limiter.acquire(transport_chat_id)
+            await self._client.send_action(transport_chat_id, "typing_off")
+        except (MaxApiError, ValueError) as exc:
+            logger.debug("MAX typing_off action failed: %s", exc)
+
     async def send(
         self,
         chat_id: str,
@@ -914,6 +1629,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             return SendResult(success=False, error="MAX adapter is not connected")
         if not content:
             return SendResult(success=False, error="MAX message is empty")
+        transport_chat_id = _transport_chat_id(chat_id, metadata)
         media_files, cleaned_content = self._extract_outbound_media(content)
         if media_files:
             return await self._send_media_files(
@@ -922,7 +1638,10 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
                 media_files,
                 reply_to=reply_to,
                 metadata=metadata,
+                force_document="[[as_document]]" in content,
             )
+        if "MEDIA:" in content and callable(getattr(self, "extract_media", None)):
+            return SendResult(success=False, error="MAX media directive contains no safe local file")
         if "MEDIA:" in content and not callable(getattr(self, "extract_media", None)):
             return SendResult(
                 success=False,
@@ -930,15 +1649,15 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
                 retryable=False,
             )
 
-        target_type = self._target_type_for(chat_id, metadata)
+        target_type = self._target_type_for(transport_chat_id, metadata)
         message_ids: list[str] = []
         for index, chunk in enumerate(split_message(content, MAX_MESSAGE_LENGTH)):
             link = _reply_link(reply_to) if index == 0 else None
-            await self._rate_limiter.acquire(chat_id)
+            await self._rate_limiter.acquire(transport_chat_id)
 
             async def _send() -> Mapping[str, Any]:
                 return await self._client.send_message(
-                    chat_id,
+                    transport_chat_id,
                     chunk,
                     target_type=target_type,
                     link=link,
@@ -986,43 +1705,71 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
         *,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        force_document: bool = False,
     ) -> Any:
         if self._client is None:
             return SendResult(success=False, error="MAX adapter is not connected")
-        target_type = self._target_type_for(chat_id, metadata)
+        transport_chat_id = _transport_chat_id(chat_id, metadata)
+        target_type = self._target_type_for(transport_chat_id, metadata)
         attachments: list[Mapping[str, Any]] = []
-        try:
-            for item in media_files:
+        if not media_files:
+            return SendResult(success=False, error="MAX media attachment list is empty")
+        if len(media_files) > MAX_ATTACHMENTS_PER_MESSAGE:
+            return SendResult(
+                success=False,
+                error=f"MAX supports at most {MAX_ATTACHMENTS_PER_MESSAGE} attachments per message",
+            )
+        upload_errors: list[str] = []
+        for item in media_files:
+            try:
                 if isinstance(item, (tuple, list)):
                     media_path = str(item[0])
                     is_voice = bool(item[1]) if len(item) > 1 else False
                 else:
                     media_path = str(item)
                     is_voice = False
-                media_type = media_type_for_file(media_path, is_voice=is_voice)
-                upload = await self._client.upload_media(
+                media_type = media_type_for_file(
                     media_path,
-                    media_type=media_type,
-                    max_bytes=getattr(self, "_media_max_bytes", DEFAULT_MEDIA_MAX_BYTES),
-                    mime_type=mime_type_for_file(media_path, media_type),
+                    is_voice=is_voice,
+                    force_document=force_document,
                 )
+                upload = await with_backoff(
+                    lambda: self._client.upload_media(
+                        media_path,
+                        media_type=media_type,
+                        max_bytes=getattr(self, "_media_max_bytes", DEFAULT_MEDIA_MAX_BYTES),
+                        mime_type=mime_type_for_file(media_path, media_type),
+                    ),
+                    is_rate_limit=_is_retryable_media_error,
+                    extract_retry_after=_media_retry_after,
+                    max_attempts=5,
+                )
+                if not isinstance(upload, Mapping):
+                    raise MaxApiError("MAX media upload returned an invalid response")
                 token = str(upload.get("token") or "").strip()
                 if not token:
                     raise MaxApiError("MAX media upload returned no attachment token")
                 attachments.append({"type": media_type, "payload": {"token": token}})
-        except (MaxApiError, OSError, ValueError) as exc:
-            return SendResult(success=False, error=str(exc), retryable=bool(getattr(exc, "retryable", False)))
+            except (MaxApiError, OSError, TypeError, ValueError) as exc:
+                upload_errors.append(str(exc))
+
+        if not attachments:
+            return SendResult(
+                success=False,
+                error="; ".join(upload_errors) or "MAX media uploads failed",
+                error_kind="media_upload",
+            )
 
         chunks = split_message(content, MAX_MESSAGE_LENGTH) if content else [""]
         message_ids: list[str] = []
         for index, chunk in enumerate(chunks):
-            await self._rate_limiter.acquire(chat_id)
+            await self._rate_limiter.acquire(transport_chat_id)
             link = _reply_link(reply_to) if index == 0 else None
             chunk_attachments = attachments if index == 0 else None
 
             async def _send() -> Mapping[str, Any]:
                 return await self._client.send_message(
-                    chat_id,
+                    transport_chat_id,
                     chunk,
                     target_type=target_type,
                     link=link,
@@ -1032,7 +1779,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             try:
                 response = await with_backoff(
                     _send,
-                    is_rate_limit=_is_media_send_retryable,
+                    is_rate_limit=_is_retryable_media_error,
                     extract_retry_after=_media_retry_after,
                     max_attempts=5,
                 )
@@ -1046,7 +1793,17 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             message_id = _response_message_id(response)
             if message_id:
                 message_ids.append(message_id)
-        return _send_result_from_ids(message_ids)
+        result = _send_result_from_ids(message_ids)
+        if upload_errors:
+            return SendResult(
+                success=False,
+                message_id=getattr(result, "message_id", None),
+                continuation_message_ids=getattr(result, "continuation_message_ids", ()),
+                raw_response=getattr(result, "raw_response", None),
+                error="Часть вложений не доставлена: " + "; ".join(upload_errors),
+                error_kind="partial_media",
+            )
+        return result
 
     async def send_clarify(
         self,
@@ -1064,9 +1821,10 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
         if context is None:
             return SendResult(
                 success=False,
-                error="MAX native buttons require a user-bound direct message",
+                error="MAX native buttons require a user-bound message",
             )
         _target_type, user_id = context
+        transport_chat_id = _transport_chat_id(chat_id, metadata)
         rows: list[list[Mapping[str, str]]] = []
         option_lines = [f"{index + 1}. {choice}" for index, choice in enumerate(choices)]
         for index, _choice in enumerate(choices):
@@ -1074,7 +1832,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
                 "clarify",
                 f"{clarify_id}:{index}",
                 user_id=user_id,
-                chat_id=chat_id,
+                chat_id=transport_chat_id,
                 session_key=session_key,
             )
             rows.append([{"type": "callback", "text": str(index + 1), "payload": payload}])
@@ -1082,12 +1840,12 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             "clarify",
             f"{clarify_id}:other",
             user_id=user_id,
-            chat_id=chat_id,
+            chat_id=transport_chat_id,
             session_key=session_key,
         )
         rows.append([{"type": "callback", "text": "Другое", "payload": other_payload}])
         return await self._send_interactive_prompt(
-            chat_id,
+            transport_chat_id,
             "❓ " + str(question) + "\n\n" + "\n".join(option_lines),
             rows,
             metadata=metadata,
@@ -1109,9 +1867,11 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
         if context is None:
             return SendResult(
                 success=False,
-                error="MAX native buttons require a user-bound direct message",
+                error="MAX native buttons require a user-bound message",
             )
         _target_type, user_id = context
+        callback_user_id = "*" if _target_type == "chat" else user_id
+        transport_chat_id = _transport_chat_id(chat_id, metadata)
         choices: list[tuple[str, str]] = [("once", "Разрешить один раз")]
         if allow_session:
             choices.append(("session", "Разрешить на сессию"))
@@ -1125,8 +1885,8 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
                 payload = self._callbacks.issue(
                     "approval",
                     choice,
-                    user_id=user_id,
-                    chat_id=chat_id,
+                    user_id=callback_user_id,
+                    chat_id=transport_chat_id,
                     session_key=session_key,
                 )
                 row.append({"type": "callback", "text": label, "payload": payload})
@@ -1135,7 +1895,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
         if len(preview) > 3200:
             preview = preview[:3200] + "..."
         text = f"⚠️ Требуется подтверждение команды:\n\n```\n{preview}\n```\nПричина: {description}"
-        return await self._send_interactive_prompt(chat_id, text, rows, metadata=metadata)
+        return await self._send_interactive_prompt(transport_chat_id, text, rows, metadata=metadata)
 
     async def send_slash_confirm(
         self,
@@ -1150,9 +1910,11 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
         if context is None:
             return SendResult(
                 success=False,
-                error="MAX native buttons require a user-bound direct message",
+                error="MAX native buttons require a user-bound message",
             )
         _target_type, user_id = context
+        callback_user_id = "*" if _target_type == "chat" else user_id
+        transport_chat_id = _transport_chat_id(chat_id, metadata)
         choices = (
             ("once", "Подтвердить один раз"),
             ("always", "Подтверждать всегда"),
@@ -1163,13 +1925,13 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             payload = self._callbacks.issue(
                 "slash",
                 f"{choice}:{confirm_id}",
-                user_id=user_id,
-                chat_id=chat_id,
+                user_id=callback_user_id,
+                chat_id=transport_chat_id,
                 session_key=session_key,
             )
             rows.append([{"type": "callback", "text": label, "payload": payload}])
         return await self._send_interactive_prompt(
-            chat_id,
+            transport_chat_id,
             f"**{title}**\n\n{message}",
             rows,
             metadata=metadata,
@@ -1189,9 +1951,11 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
         if context is None:
             return SendResult(
                 success=False,
-                error="MAX native buttons require a user-bound direct message",
+                error="MAX native buttons require a user-bound message",
             )
         _target_type, user_id = context
+        callback_user_id = "*" if _target_type == "chat" else user_id
+        transport_chat_id = _transport_chat_id(chat_id, metadata)
         normalized = [item for item in providers if isinstance(item, Mapping)]
         if not normalized:
             return SendResult(success=False, error="MAX model provider list is empty")
@@ -1207,12 +1971,13 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             "on_model_selected": on_model_selected,
             "session_key": session_key,
             "user_id": user_id,
-            "chat_id": str(chat_id),
+            "callback_user_id": callback_user_id,
+            "chat_id": transport_chat_id,
         }
         state = self._model_pickers[picker_id]
         rows = self._model_provider_rows(state, picker_id, None)
         result = await self._send_interactive_prompt(
-            chat_id,
+            transport_chat_id,
             self._model_picker_provider_text(state),
             rows,
             metadata=metadata,
@@ -1228,7 +1993,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
         callback: Optional[MaxCallback],
     ) -> list[list[Mapping[str, str]]]:
         chat_id = callback.chat_id if callback else ""
-        user_id = callback.user_id if callback else str(state["user_id"])
+        user_id = callback.user_id if callback else str(state.get("callback_user_id") or state["user_id"])
         rows: list[list[Mapping[str, str]]] = []
         buttons: list[Mapping[str, str]] = []
         for provider in state["providers"][:20]:
@@ -1322,12 +2087,17 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
         *,
         finalize: bool = False,
     ) -> Any:
-        del chat_id, finalize
+        del finalize
         if self._client is None:
             return SendResult(success=False, error="MAX adapter is not connected")
+        transport_chat_id = _transport_chat_id(chat_id)
         try:
-            await self._rate_limiter.acquire(chat_id)
-            response = await self._client.edit_message(message_id, content[:MAX_MESSAGE_LENGTH])
+            await self._rate_limiter.acquire(transport_chat_id)
+            response = await with_backoff(
+                lambda: self._client.edit_message(message_id, content[:MAX_MESSAGE_LENGTH]),
+                is_rate_limit=_is_max_rate_limit,
+                extract_retry_after=_retry_after,
+            )
         except MaxApiError as exc:
             return SendResult(
                 success=False,
@@ -1338,8 +2108,13 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
         return SendResult(success=True, message_id=message_id, raw_response=response)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        target_type = self._chat_target_types.get(chat_id, "user")
-        return {"name": chat_id, "type": "group" if target_type == "chat" else "dm", "chat_id": chat_id}
+        transport_chat_id = _transport_chat_id(chat_id)
+        target_type = self._chat_target_types.get(transport_chat_id, "user")
+        return {
+            "name": transport_chat_id,
+            "type": "group" if target_type == "chat" else "dm",
+            "chat_id": transport_chat_id,
+        }
 
 
 def _truthy(value: Any) -> bool:
@@ -1392,6 +2167,7 @@ def apply_yaml_config(_yaml_cfg: dict, platform_cfg: dict) -> dict[str, Any]:
         "allow_from": "MAX_ALLOWED_USERS",
         "group_allow_from": "MAX_GROUP_ALLOWED_USERS",
         "group_allowed_chats": "MAX_GROUP_ALLOWED_CHATS",
+        "allow_admin_from": "MAX_ADMIN_USERS",
     }
     for key, value in extra.items():
         if key in {"enabled", "token"}:
@@ -1409,7 +2185,7 @@ def apply_yaml_config(_yaml_cfg: dict, platform_cfg: dict) -> dict[str, Any]:
             "require_mention",
         }:
             result[key] = os.environ.get(env_name, value) if env_name else value
-        elif key in {"allow_from", "group_allow_from", "group_allowed_chats"}:
+        elif key in {"allow_from", "group_allow_from", "group_allowed_chats", "allow_admin_from"}:
             result[key] = value
     return result
 
@@ -1438,7 +2214,10 @@ async def standalone_send(
             verify=verify,
         )
         try:
-            target_type = "chat" if str(chat_id) in set(extra.get("group_allowed_chats", [])) else "user"
+            configured_groups = extra.get("group_allowed_chats", [])
+            if isinstance(configured_groups, str):
+                configured_groups = [item.strip() for item in configured_groups.split(",") if item.strip()]
+            target_type = "chat" if str(chat_id) in set(configured_groups or []) else "user"
             target_path = str(
                 extra.get("target_path")
                 or os.environ.get("MAX_TARGET_PATH", Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser() / "max" / "targets.sqlite3")
@@ -1457,15 +2236,39 @@ async def standalone_send(
                 )
             except (TypeError, ValueError):
                 media_max_bytes = DEFAULT_MEDIA_MAX_BYTES
+            media_max_bytes = min(max(1, media_max_bytes), DEFAULT_MEDIA_MAX_BYTES)
             attachments: list[Mapping[str, Any]] = []
-            for media_path in media_files or []:
-                path = str(media_path)
+            raw_media_files = list(media_files or [])
+            if len(raw_media_files) > MAX_ATTACHMENTS_PER_MESSAGE:
+                return {
+                    "error": f"MAX supports at most {MAX_ATTACHMENTS_PER_MESSAGE} attachments per message"
+                }
+            for media_path in raw_media_files:
+                if isinstance(media_path, (tuple, list)):
+                    path = str(media_path[0])
+                    is_voice = bool(media_path[1]) if len(media_path) > 1 else False
+                else:
+                    path = str(media_path)
+                    is_voice = False
+                try:
+                    safe_path = BasePlatformAdapter.validate_media_delivery_path(path)
+                except (OSError, RuntimeError, ValueError):
+                    safe_path = None
+                if not safe_path:
+                    return {"error": "MAX standalone attachment path is not allowed"}
                 media_type = media_type_for_file(path, force_document=force_document)
-                upload = await client.upload_media(
-                    path,
-                    media_type=media_type,
-                    max_bytes=media_max_bytes,
-                    mime_type=mime_type_for_file(path, media_type),
+                if is_voice and not force_document:
+                    media_type = media_type_for_file(path, is_voice=True)
+                upload = await with_backoff(
+                    lambda: client.upload_media(
+                        safe_path,
+                        media_type=media_type,
+                        max_bytes=media_max_bytes,
+                        mime_type=mime_type_for_file(safe_path, media_type),
+                    ),
+                    is_rate_limit=_is_retryable_media_error,
+                    extract_retry_after=_media_retry_after,
+                    max_attempts=5,
                 )
                 token_value = str(upload.get("token") or "").strip()
                 if not token_value:

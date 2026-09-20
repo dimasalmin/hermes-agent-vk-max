@@ -1,6 +1,6 @@
 # Подключение MAX к Hermes Agent
 
-Это инструкция для текущего MVP. Плагин не обещает универсальную
+Это инструкция для текущего внешнего плагина. Плагин не обещает универсальную
 доступность MAX при любых региональных ограничениях связи: результат зависит
 от региона, оператора, устройства и режима ограничения.
 
@@ -33,6 +33,10 @@ ln -s "/path/to/hermes-agent-ru-messengers/plugins/max" "$HOME/.hermes/plugins/m
 ```env
 MAX_BOT_TOKEN=<token MAX для бизнеса>
 MAX_ALLOWED_USERS=<числовые user_id через запятую>
+# Для групп нужны одновременно разрешённые пользователи и чаты.
+MAX_GROUP_ALLOWED_USERS=<user_id через запятую>
+MAX_GROUP_ALLOWED_CHATS=<chat_id через запятую>
+MAX_ADMIN_USERS=<администраторы групп через запятую>
 # Необязательно: максимум одного входящего/исходящего файла, 50 MiB по умолчанию.
 MAX_MEDIA_MAX_BYTES=52428800
 ```
@@ -85,7 +89,14 @@ reverse proxy. Подробности: `docs/ops/max-upgrade-safe.md` и
 - `MAX_ALLOWED_USERS` — разрешённые DM и группы;
 - `MAX_GROUP_ALLOWED_USERS` — пользователи только для групп;
 - `MAX_GROUP_ALLOWED_CHATS` — разрешённые group chat ID;
+- `MAX_ADMIN_USERS` — пользователи, которым разрешены approval и управляющие
+  действия в группах;
 - `MAX_ALLOW_ALL_USERS=true` — только временная разработческая настройка.
+
+Доступ в группе проверяется как логическое «И»: отправитель должен быть в
+пользовательском allowlist, а чат — в `MAX_GROUP_ALLOWED_CHATS`. В группах
+контекст Hermes разделяется по паре `chat_id + user_id`; физическая доставка
+при этом возвращается в исходный MAX chat ID.
 
 Важно: текущий глобальный Hermes registry сначала применяет
 `MAX_ALLOWED_USERS`. Поэтому пользователи, которым разрешён доступ только в
@@ -97,20 +108,30 @@ reverse proxy. Подробности: `docs/ops/max-upgrade-safe.md` и
 
 ## 7. Что сейчас реализовано
 
-- текстовые DM и базовый group routing;
+- текстовые DM и закрытые group routing с раздельными сессиями участников;
 - нормализация `body.mid` и `recipient.chat_type`;
 - chunking до 4000 символов;
 - `Authorization` и API v2;
 - Long Polling с marker;
 - Webhook secret, ACK decision, bounded queue и dedup;
 - Hermes plugin contract, YAML hook и standalone sender;
-- входящие image/audio/video/file через локальный Hermes media cache;
-- исходящие `MEDIA:` через актуальный `/uploads` и `payload.token`;
+- входящие image/audio/video/file через локальный Hermes media cache, включая
+  разрешение video-token через `GET /videos/{token}`;
+- исходящие изображения, документы, audio/voice, video, animation, `MEDIA:` и
+  standalone/cron через общий `/uploads` → multipart `data` → message поток;
+- несколько вложений, кириллические имена, `[[as_document]]`, ограничение 10
+  вложений в сообщении и частичный итог при ошибке одного файла;
+- меню до 32 подтверждённых Hermes-команд через `PATCH /me/commands`, `/menu`,
+  `/start`, `/maxstatus` и inline-кнопки;
+- typing/typing_off, durable polling inbox и состояния pending/processing/
+  processed/failed без автоматического повтора неоднозначного события;
 - ограничение размера и проверка официальных HTTPS media-hosts;
 - безопасная TLS-политика.
 
-Пока не считаются release-ready без отдельной проверки на disposable bot:
-живой media acceptance, полноценный streaming UX и полевой тест без VPN.
+Не считать доказанными только по unit/loader тестам: реальную доставку медиа
+на телефон, чтение содержимого моделью, живой групповой callback и полевой
+тест без VPN. Эти проверки требуют disposable/test bot либо согласованного
+окна с единственным polling-потребителем.
 
 ## 8. Проверка и откат
 

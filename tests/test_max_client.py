@@ -126,6 +126,95 @@ async def test_get_updates_preserves_marker_and_timeout() -> None:
 
 
 @pytest.mark.asyncio
+async def test_commands_actions_and_video_resolution_use_documented_routes() -> None:
+    seen = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.method == "PATCH":
+            assert request.url.path == "/me/commands"
+            assert loads(request.content) == {
+                "commands": [{"name": "menu", "description": "Menu"}]
+            }
+            return httpx.Response(200, json={"success": True})
+        if request.method == "POST":
+            assert request.url.path == "/chats/chat-1/actions"
+            assert loads(request.content) == {"action": "typing"}
+            return httpx.Response(200, json={"success": True})
+        assert request.method == "GET"
+        assert request.url.path == "/videos/video-token"
+        return httpx.Response(200, json={"urls": {"mp4": "https://vu.okcdn.ru/video.mp4"}})
+
+    client = _client(handler)
+    try:
+        assert await client.set_bot_commands([{"name": "menu", "description": "Menu"}]) == {"success": True}
+        assert await client.send_action("chat-1", "typing") == {"success": True}
+        video = await client.get_video("video-token")
+    finally:
+        await client.close()
+
+    assert video["urls"]["mp4"].endswith("video.mp4")
+    assert len(seen) == 3
+
+
+@pytest.mark.asyncio
+async def test_upload_uses_nested_photos_token_only_after_success(tmp_path) -> None:
+    path = tmp_path / "photo.png"
+    path.write_bytes(b"png")
+
+    async def api_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"url": "https://iu.oneme.ru/upload", "photos": {"token": "initial-photo-token"}},
+            request=request,
+        )
+
+    async def media_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"photos": {"token": "nested-photo-token"}}, request=request)
+
+    api_http = httpx.AsyncClient(
+        base_url=DEFAULT_API_BASE,
+        transport=httpx.MockTransport(api_handler),
+    )
+    media_http = httpx.AsyncClient(transport=httpx.MockTransport(media_handler))
+    client = MaxClient("secret-token", http_client=api_http, media_http_client=media_http)
+    try:
+        result = await client.upload_media(path, media_type="image", max_bytes=16)
+    finally:
+        await client.close()
+
+    assert result["token"] == "nested-photo-token"
+
+
+@pytest.mark.asyncio
+async def test_upload_does_not_use_initial_token_after_failed_multipart(tmp_path) -> None:
+    path = tmp_path / "photo.png"
+    path.write_bytes(b"png")
+
+    async def api_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"url": "https://iu.oneme.ru/upload", "token": "initial-photo-token"},
+            request=request,
+        )
+
+    async def media_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"message": "failed"}, request=request)
+
+    api_http = httpx.AsyncClient(
+        base_url=DEFAULT_API_BASE,
+        transport=httpx.MockTransport(api_handler),
+    )
+    media_http = httpx.AsyncClient(transport=httpx.MockTransport(media_handler))
+    client = MaxClient("secret-token", http_client=api_http, media_http_client=media_http)
+    try:
+        with pytest.raises(MaxApiError):
+            await client.upload_media(path, media_type="image", max_bytes=16)
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_api_error_exposes_retry_after_without_leaking_token() -> None:
     async def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(

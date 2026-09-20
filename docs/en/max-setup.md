@@ -1,6 +1,6 @@
 # MAX setup for Hermes Agent
 
-This document describes the current MVP. It does not promise that MAX is
+This document describes the current external plugin. It does not promise that MAX is
 available during every regional mobile-network restriction.
 
 ## 1. Create a MAX bot
@@ -30,6 +30,10 @@ The installed directory must contain `plugin.yaml`, not `PLUGIN.yaml`.
 ```env
 MAX_BOT_TOKEN=...
 MAX_ALLOWED_USERS=123456789
+# Groups require both lists.
+MAX_GROUP_ALLOWED_USERS=123456789
+MAX_GROUP_ALLOWED_CHATS=123456789
+MAX_ADMIN_USERS=123456789
 # Optional: per-attachment limit; default is 50 MiB.
 MAX_MEDIA_MAX_BYTES=52428800
 ```
@@ -74,8 +78,9 @@ TLS termination and public port 443 remain reverse-proxy responsibilities.
 ## 6. Security policy
 
 The default is deny. Put only trusted numeric MAX user IDs in
-`MAX_ALLOWED_USERS`. Group access additionally uses
-`MAX_GROUP_ALLOWED_USERS` and `MAX_GROUP_ALLOWED_CHATS`. Do not enable
+`MAX_ALLOWED_USERS`. Group access is an AND check: the sender must be allowed
+and the chat must be listed in `MAX_GROUP_ALLOWED_CHATS`. `MAX_ADMIN_USERS`
+restricts approvals and control actions in groups. Do not enable
 `MAX_ALLOW_ALL_USERS` on a public bot.
 
 The Hermes global authorization registry runs before the adapter. Therefore
@@ -86,14 +91,16 @@ bypass Hermes global authorization.
 ## 7. Current status and limitations
 
 - Text and text chunking are implemented.
-- Inbound media is cached locally through Hermes; outbound `MEDIA:` files use
-  the current MAX `/uploads` and `payload.token` contract.
+- Image, document, audio/voice and video delivery is wired to Hermes' native
+  adapter methods in both directions; inbound bytes use Hermes' existing
+  cache, and outbound files use `/uploads` plus multipart `data`.
+- The command menu, `/menu`, `/start`, `/maxstatus`, native buttons and group
+  participant-scoped sessions are implemented.
 - Media has contract tests but still needs disposable-bot acceptance.
-- Callback approval buttons are wired to Hermes resolvers.
 - Streaming edits are present as an adapter API but require rate-limit and
   message-age integration tests before production use.
-- Store availability and whitelist behavior require a dated operator/region
-  field test.
+- Store availability, CDN reachability and whitelist behavior require a dated
+  operator/region field test.
 
 ## 8. Verification and rollback
 

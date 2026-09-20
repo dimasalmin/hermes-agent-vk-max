@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Added native Hermes media overrides for images, documents, voice/audio,
+  video, animation and multiple images, including remote image re-upload,
+  Cyrillic filenames, `[[as_document]]`, 50 MiB bounds and partial batch
+  failure reporting.
+- Added inbound video-token resolution, Russian attachment errors, MAX command
+  registration/menu, `/menu`, `/start`, `/maxstatus`, typing actions and
+  participant-scoped group sessions.
+- Made polling and Webhook inbox states durable across receipt/processing;
+  ambiguous failed events remain diagnostic instead of being replayed silently.
+- Added strict group AND allowlist semantics and explicit `MAX_ADMIN_USERS`.
 - Added MAX inline keyboards for Hermes clarify prompts, exec approvals and
   slash confirmations.
 - Added a two-step `/model` picker for provider and model selection.

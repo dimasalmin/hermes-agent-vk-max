@@ -15,8 +15,7 @@ be measured for the target region, operator, device and incident mode.
 
 ## Current status
 
-The MAX plugin currently provides the infrastructure, text path and native
-interactive controls:
+The MAX plugin currently provides text, native media and interactive controls:
 
 - MAX Bot API v2 REST client at `platform-api2.max.ru`.
 - `Authorization` header, typed API errors and retry metadata.
@@ -25,24 +24,33 @@ interactive controls:
   `build_source`, `apply_yaml_config_fn`, and standalone sender hooks.
 - Development Long Polling with marker handling.
 - Webhook secret validation, bounded queue and dedup receiver.
-- DM/group allowlist policy and text chunking at 4000 characters.
+- DM/group allowlist policy, participant-scoped group sessions and text
+  chunking at 4000 characters.
 - Native MAX inline keyboards for Hermes clarify prompts, dangerous-command
   approvals and slash confirmations. Button callbacks use the official
   `message_callback` -> `/answers` flow.
 - Native `/model` picker with provider and model selection, using the same
   callback state and Hermes `on_model_selected` hook as Telegram.
 - Opaque, short-lived, single-use callback state bound to the MAX user and
-  chat. Group prompts fall back to text unless Hermes provides a user-bound
-  control metadata value.
-- Bounded inbound media downloads into Hermes' existing media cache and
-  outbound `MEDIA:` uploads through the current MAX `/uploads` token flow.
+  chat. Group approvals, model changes and control commands require
+  `MAX_ADMIN_USERS`; clarify buttons remain bound to their initiator.
+- Bounded inbound image, document, audio and video downloads into Hermes'
+  existing media cache, including MAX video-token resolution.
+- Native outbound image, document, audio/voice and video methods, remote image
+  re-upload, multiple images, `MEDIA:`, standalone/cron delivery and
+  `[[as_document]]` through the current MAX `/uploads` token flow.
+- MAX slash-command registration, `/menu`, `/start`, `/maxstatus`, inline
+  command buttons and typing actions.
+- Durable polling/Webhook inbox state with explicit failed diagnostics and no
+  silent automatic replay of ambiguous processing.
 - Configurable `MAX_MEDIA_MAX_BYTES` limit (50 MiB by default) and CDN URL
   host allowlist; the bot token is not sent to signed media URLs.
 - TLS verification with an optional deployment-managed `MAX_CA_BUNDLE`.
 
-Media is covered by contract tests but still needs disposable-bot acceptance.
-Streaming edits remain a separate release gate. The optional Webhook ingress is
-a separate process and is not embedded in the Hermes gateway.
+Media and command paths are covered by contract tests but still need
+disposable-bot acceptance. Streaming edits remain a separate release gate. The
+optional Webhook ingress is a separate process and is not embedded in the
+Hermes gateway.
 
 ## Development
 
@@ -85,6 +93,9 @@ At minimum:
 ```env
 MAX_BOT_TOKEN=<token from MAX for Business>
 MAX_ALLOWED_USERS=<numeric MAX user ids separated by commas>
+MAX_GROUP_ALLOWED_USERS=<numeric MAX user ids for groups>
+MAX_GROUP_ALLOWED_CHATS=<numeric MAX group chat ids>
+MAX_ADMIN_USERS=<numeric MAX group administrators>
 # Optional; 50 MiB default for each inbound or outbound attachment.
 MAX_MEDIA_MAX_BYTES=52428800
 # Optional; defaults to 600 seconds and is intentionally in-memory only.
@@ -92,8 +103,9 @@ MAX_CALLBACK_TTL_SECONDS=600
 ```
 
 Hermes applies `MAX_ALLOWED_USERS` before the adapter. Group-only users must
-also be listed there; `MAX_GROUP_ALLOWED_USERS` and
-`MAX_GROUP_ALLOWED_CHATS` further restrict group routing inside the plugin.
+also be listed there; inside the plugin a group request requires both the
+allowlisted sender and allowlisted chat. Group sessions use a separate
+`chat_id + user_id` scope while MAX delivery still targets the physical chat.
 
 Development polling is used when `MAX_WEBHOOK_URL` is absent. Production Webhook
 requires an HTTPS endpoint on port 443 and `MAX_WEBHOOK_SECRET`. If the host

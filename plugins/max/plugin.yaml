@@ -34,6 +34,11 @@ optional_env:
     prompt: "Allowed MAX group chats"
     password: false
     category: messaging
+  - name: MAX_ADMIN_USERS
+    description: "Comma-separated MAX user IDs allowed to approve and run group control actions"
+    prompt: "MAX group administrators"
+    password: false
+    category: messaging
   - name: MAX_ALLOW_ALL_USERS
     description: "Development-only override that disables the allowlist"
     prompt: "Allow all MAX users?"

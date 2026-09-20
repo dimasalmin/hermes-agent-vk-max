@@ -36,7 +36,7 @@ def split_message(text: str, max_len: int) -> list[str]:
     return chunks
 
 
-ALWAYS_ALLOWED_COMMANDS = frozenset({"help", "whoami"})
+ALWAYS_ALLOWED_COMMANDS = frozenset({"help", "whoami", "menu", "maxstatus"})
 
 
 def _parse_ids(value: Optional[str]) -> Set[str]:
@@ -65,6 +65,7 @@ class AccessPolicy:
         group_allowed_chats_env: Optional[str],
         allow_all_env: Optional[str],
         guest_mode_env: Optional[str],
+        admin_users_env: Optional[str] = None,
         extra: Optional[dict] = None,
     ) -> "AccessPolicy":
         extra = extra or {}
@@ -81,7 +82,7 @@ class AccessPolicy:
             allowed_users=_parse_ids(allowed_users_env) | ids("allow_from"),
             group_allowed_users=_parse_ids(group_allowed_users_env) | ids("group_allow_from"),
             group_allowed_chats=_parse_ids(group_allowed_chats_env) | ids("group_allowed_chats"),
-            admin_users=ids("allow_admin_from"),
+            admin_users=_parse_ids(admin_users_env) | ids("allow_admin_from"),
             user_allowed_commands=ids("user_allowed_commands"),
             group_user_allowed_commands=ids("group_user_allowed_commands"),
             guest_mode=str(guest_mode_env or "").lower() in {"1", "true", "yes"},
@@ -92,13 +93,20 @@ class AccessPolicy:
         return self.allow_all or user_id in self.allowed_users
 
     def can_group(self, user_id: str, chat_id: str, *, mentioned: bool) -> bool:
-        return (
-            self.allow_all
-            or user_id in self.allowed_users
+        if self.allow_all:
+            return True
+        allowed_user = (
+            user_id in self.allowed_users
             or user_id in self.group_allowed_users
-            or chat_id in self.group_allowed_chats
-            or (self.guest_mode and mentioned)
+            or user_id in self.admin_users
         )
+        allowed_chat = chat_id in self.group_allowed_chats
+        if allowed_user and allowed_chat:
+            return True
+        return bool(self.guest_mode and mentioned and allowed_chat)
+
+    def is_admin(self, user_id: str) -> bool:
+        return self.allow_all or str(user_id).strip() in self.admin_users
 
     def can_run_command(self, user_id: str, command: str, *, is_group: bool) -> bool:
         cmd = command.lstrip("/").split("@", 1)[0].split(" ", 1)[0].lower()

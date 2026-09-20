@@ -5,12 +5,13 @@ plugins as `hermes_plugins.<slug>`. Keep internal imports relative and do not
 depend on sibling packages from this repository.
 
 The plugin targets MAX Bot API v2 at `platform-api2.max.ru` and uses the public
-Hermes platform adapter contract. It currently exposes the text MVP, development
-Long Polling, Webhook receiver/queue primitives, allowlist policy, API errors,
-and TLS verification.
+Hermes platform adapter contract. The current release path includes text,
+native media delivery, inbound media caching, slash-command registration,
+inline buttons, DM/group access policy, Webhook and development Long Polling.
 
 Install this directory as `~/.hermes/plugins/max/` with the lowercase
 `plugin.yaml` manifest. Do not install it inside the Hermes source tree.
 
-See the Russian setup guide at `../../docs/ru/max-setup.md` and the implementation
-plan at `../../docs/superpowers/plans/2026-08-08-hermes-max.md`.
+See the Russian setup guide at `../../docs/ru/max-setup.md`, the interactive
+button guide at `../../docs/ru/max-interactive.md`, and the implementation
+record at `../../docs/analysis/2026-09-20-max-media-implementation.md`.
