@@ -74,6 +74,14 @@ async def _run(args: argparse.Namespace) -> int:
     try:
         bot = await client.get_me()
         print(f"me_status=ok user_id={bot.get('user_id') or bot.get('id')} username={bot.get('username')}")
+        commands = bot.get("commands")
+        if isinstance(commands, list):
+            names = [
+                str(item.get("name"))
+                for item in commands
+                if isinstance(item, Mapping) and item.get("name")
+            ]
+            print(f"commands_status=ok count={len(names)} names={','.join(names)}")
 
         if args.send:
             if not args.user_id:
