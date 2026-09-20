@@ -1,6 +1,6 @@
 # MAX Media And Control Implementation Record
 
-Date: 2026-09-20
+Initial implementation date: 2026-09-20. Verification update: 2026-09-21.
 
 This record describes the first implementation pass from the approved MAX
 channel plan. It is intentionally separate from Hermes core and is meant to be
@@ -27,7 +27,9 @@ read together with `docs/ops/max-upgrade-safe.md`.
 3. Local and approved remote images use `/uploads`, multipart field `data`,
    then a token attachment. `MEDIA:` and standalone delivery share the same
    upload contract. `[[as_document]]`, multiple files, Cyrillic names, 50 MiB
-   bounds and a ten-attachment message bound are supported.
+   bounds are supported. MAX image/video batches are capped at 12; files and
+   audio are split into compatible messages because MAX rejects a file mixed
+   with image/video media.
 4. Incoming media uses Hermes' existing byte cache. Images, documents, audio,
    voice and video are mapped to the corresponding `MessageType`; video
    attachments without a URL are resolved through `GET /videos/{token}`.
@@ -46,7 +48,11 @@ read together with `docs/ops/max-upgrade-safe.md`.
    replayed. Webhook inbox has the same processing states.
 8. CDN requests never receive the bot token. HTTPS media hosts, ports,
    redirect targets and literal private IP addresses are checked before
-   download. API retries honor `Retry-After` and `attachment.not.ready`.
+   download. API retries honor `Retry-After` and the live MAX message
+   `errors.process.attachment.file.not.processed` response, normalized as
+   `attachment.not.ready`.
+9. A configured MAX CA bundle is added to the system trust context rather than
+   replacing system roots; this covers both the MAX API and its upload CDN.
 
 ## Evidence
 
@@ -55,7 +61,7 @@ Commands executed against the installed Hermes runtime:
 ```text
 PYTHONPATH=/home/xidden/.hermes/hermes-agent \
   /home/xidden/.hermes/hermes-agent/venv/bin/python -m pytest -q
-113 passed
+118 passed
 
 python scripts/max_loader_smoke.py \
   --hermes-root /home/xidden/.hermes/hermes-agent \
@@ -64,6 +70,22 @@ plugin_import=ok
 adapter_instantiation=ok
 writes_hermes_core=no
 ```
+
+Live transport evidence on 2026-09-21, using the configured bot and one
+existing gateway poller:
+
+- `GET /me` returned the expected bot identity.
+- A direct text message reached the configured MAX user.
+- The outbound media smoke uploaded a Cyrillic-named PNG and TXT, then sent
+  them as two MAX-compatible messages. The test used the normal
+  `MAX_CA_BUNDLE`; TLS stayed enabled, and the document send retried once
+  while MAX processed the attachment.
+- The gateway remained the only polling consumer; no direct smoke called
+  `get_updates`.
+
+These facts prove transport/API behavior and outbound delivery from the host,
+not phone rendering, inbound media, Hermes model use of media, group callbacks,
+or availability on a mobile network without VPN.
 
 The tests prove protocol shapes, method contracts, durable state transitions,
 URL/token policy, group callback authorization and synthetic group-session

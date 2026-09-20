@@ -45,14 +45,15 @@ transport.
 ## 4. TLS
 
 The API base is `https://platform-api2.max.ru`. Keep TLS verification enabled.
-If the host trust store does not contain the required chain, create a verified
-PEM bundle and set:
+The plugin keeps the host trust store and adds certificates from the configured
+PEM bundle. If the host trust store does not contain the required MAX chain, set:
 
 ```env
 MAX_CA_BUNDLE=/etc/hermes/max-ca-bundle.pem
 ```
 
-Do not use `verify=False` or an insecure curl check as an operational fix.
+The bundle may contain only the current MAX chain. Do not use `verify=False` or
+an insecure curl check as an operational fix.
 
 ## 5. Production Webhook prerequisites
 
@@ -96,7 +97,10 @@ bypass Hermes global authorization.
   cache, and outbound files use `/uploads` plus multipart `data`.
 - The command menu, `/menu`, `/start`, `/maxstatus`, native buttons and group
   participant-scoped sessions are implemented.
-- Media has contract tests but still needs disposable-bot acceptance.
+- Outbound image and document upload/delivery have been live-smoked; inbound
+  media, phone rendering and model-use acceptance remain pending.
+- Media batching follows MAX's restriction: image/video batches are limited to
+  12 items, while files and audio are sent in compatible separate messages.
 - Streaming edits are present as an adapter API but require rate-limit and
   message-age integration tests before production use.
 - Store availability, CDN reachability and whitelist behavior require a dated
@@ -109,7 +113,10 @@ python -m pytest -q
 ```
 
 For a live transport check, provide `MAX_BOT_TOKEN` and `MAX_CA_BUNDLE` only in
-the shell environment, then run `scripts/max_live_smoke.py`. The adapter-level
+the shell environment, then run `scripts/max_live_smoke.py` without polling
+when the gateway is active. Use `scripts/max_media_live_smoke.py` for outbound
+image/document delivery and `scripts/max_upload_live_inspect.py` for a
+redacted upload-response shape. The adapter-level
 check `scripts/max_adapter_live_smoke.py` uses temporary SQLite state and a
 collector instead of Hermes model execution.
 

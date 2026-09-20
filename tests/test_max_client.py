@@ -187,6 +187,39 @@ async def test_upload_uses_nested_photos_token_only_after_success(tmp_path) -> N
 
 
 @pytest.mark.asyncio
+async def test_upload_extracts_token_from_live_photos_id_map(tmp_path) -> None:
+    path = tmp_path / "photo.png"
+    path.write_bytes(b"png")
+
+    async def api_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"url": "https://iu.oneme.ru/upload"},
+            request=request,
+        )
+
+    async def media_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"photos": {"opaque-photo-id": {"token": "live-photo-token"}}},
+            request=request,
+        )
+
+    api_http = httpx.AsyncClient(
+        base_url=DEFAULT_API_BASE,
+        transport=httpx.MockTransport(api_handler),
+    )
+    media_http = httpx.AsyncClient(transport=httpx.MockTransport(media_handler))
+    client = MaxClient("secret-token", http_client=api_http, media_http_client=media_http)
+    try:
+        result = await client.upload_media(path, media_type="image", max_bytes=16)
+    finally:
+        await client.close()
+
+    assert result["token"] == "live-photo-token"
+
+
+@pytest.mark.asyncio
 async def test_upload_does_not_use_initial_token_after_failed_multipart(tmp_path) -> None:
     path = tmp_path / "photo.png"
     path.write_bytes(b"png")
@@ -233,3 +266,21 @@ async def test_api_error_exposes_retry_after_without_leaking_token() -> None:
     assert error.value.status_code == 429
     assert error.value.retry_after == 2.5
     assert "secret-token" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_attachment_not_ready_message_is_retryable() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={"message": "Key: errors.process.attachment.file.not.processed"},
+        )
+
+    client = _client(handler)
+    try:
+        with pytest.raises(MaxApiError) as error:
+            await client.send_message("42", "document", attachments=[])
+    finally:
+        await client.close()
+
+    assert error.value.code == "attachment.not.ready"

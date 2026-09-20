@@ -45,12 +45,13 @@ The MAX plugin currently provides text, native media and interactive controls:
   silent automatic replay of ambiguous processing.
 - Configurable `MAX_MEDIA_MAX_BYTES` limit (50 MiB by default) and CDN URL
   host allowlist; the bot token is not sent to signed media URLs.
-- TLS verification with an optional deployment-managed `MAX_CA_BUNDLE`.
+- TLS verification with an optional deployment-managed `MAX_CA_BUNDLE`; the
+  plugin keeps system roots when adding the MAX chain.
 
-Media and command paths are covered by contract tests but still need
-disposable-bot acceptance. Streaming edits remain a separate release gate. The
-optional Webhook ingress is a separate process and is not embedded in the
-Hermes gateway.
+Outbound image/document upload and delivery have passed a live smoke. Inbound
+media, phone rendering, model-use acceptance, and a no-VPN field test remain
+release gates. Streaming edits remain a separate gate. The optional Webhook
+ingress is a separate process and is not embedded in the Hermes gateway.
 
 ## Development
 
@@ -65,7 +66,8 @@ TLS policy, bounded Webhook queue and Hermes loader compatibility.
 Live checks, with secrets supplied only through the environment:
 
 ```bash
-python scripts/max_live_smoke.py --user-id 9533440 --send --poll-seconds 30
+python scripts/max_live_smoke.py --user-id 9533440 --send
+python scripts/max_media_live_smoke.py --user-id 9533440
 python scripts/max_adapter_live_smoke.py --seconds 8
 ```
 

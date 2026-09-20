@@ -37,6 +37,13 @@ def _attachment_token(value: Any) -> Optional[str]:
             token = _attachment_token(nested)
             if token:
                 return token
+            # The live image upload response uses an opaque photo id as the
+            # mapping key: {"photos": {"<id>": {"token": "..."}}}.
+            if key == "photos":
+                for item in list(nested.values())[:32]:
+                    token = _attachment_token(item)
+                    if token:
+                        return token
         elif isinstance(nested, (list, tuple)):
             for item in nested:
                 token = _attachment_token(item)
@@ -72,6 +79,16 @@ def _retry_after(response: httpx.Response) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _error_code(error: Mapping[str, Any]) -> Optional[str]:
+    code = error.get("code")
+    if code:
+        return str(code)
+    detail = str(error.get("message") or "").lower()
+    if "attachment.not.ready" in detail or "attachment.file.not.processed" in detail:
+        return "attachment.not.ready"
+    return None
 
 
 class MaxClient:
@@ -154,13 +171,13 @@ class MaxClient:
 
         if response.status_code >= 400:
             error = payload if isinstance(payload, Mapping) else {}
-            code = error.get("code")
+            code = _error_code(error)
             detail = error.get("message") or response.reason_phrase or "MAX API error"
             retryable = response.status_code == 429 or response.status_code >= 500
             raise MaxApiError(
                 f"MAX API {response.status_code}: {detail}",
                 status_code=response.status_code,
-                code=str(code) if code else None,
+                code=code,
                 retry_after=_retry_after(response),
                 retryable=retryable,
             )
@@ -304,7 +321,7 @@ class MaxClient:
             raise MaxApiError(
                 f"MAX media upload HTTP {response.status_code}: {detail}",
                 status_code=response.status_code,
-                code=str(error.get("code")) if error.get("code") else None,
+                code=_error_code(error),
                 retry_after=_retry_after(response),
                 retryable=response.status_code == 429 or response.status_code >= 500,
             )

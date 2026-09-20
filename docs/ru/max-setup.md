@@ -37,7 +37,7 @@ MAX_ALLOWED_USERS=<числовые user_id через запятую>
 MAX_GROUP_ALLOWED_USERS=<user_id через запятую>
 MAX_GROUP_ALLOWED_CHATS=<chat_id через запятую>
 MAX_ADMIN_USERS=<администраторы групп через запятую>
-# Необязательно: максимум одного входящего/исходящего файла, 50 MiB по умолчанию.
+# Необязательно: максимум 50 MiB на одно входящее/исходящее вложение.
 MAX_MEDIA_MAX_BYTES=52428800
 ```
 
@@ -55,8 +55,9 @@ bundle:
 MAX_CA_BUNDLE=/etc/hermes/max-ca-bundle.pem
 ```
 
-В bundle должны входить системные корни и актуальная доверенная цепочка,
-необходимая MAX. Нельзя исправлять проблему через `verify=False`.
+Плагин сохраняет системные корни ОС и добавляет сертификаты из указанного
+bundle. Поэтому bundle может содержать только актуальную доверенную цепочку
+MAX; нельзя исправлять проблему через `verify=False`.
 
 ## 5. Webhook
 
@@ -119,8 +120,9 @@ reverse proxy. Подробности: `docs/ops/max-upgrade-safe.md` и
   разрешение video-token через `GET /videos/{token}`;
 - исходящие изображения, документы, audio/voice, video, animation, `MEDIA:` и
   standalone/cron через общий `/uploads` → multipart `data` → message поток;
-- несколько вложений, кириллические имена, `[[as_document]]`, ограничение 10
-  вложений в сообщении и частичный итог при ошибке одного файла;
+- несколько вложений, кириллические имена и `[[as_document]]`; изображения и
+  видео группируются до 12 вложений, файлы и аудио отправляются отдельными
+  совместимыми сообщениями; ошибка одного вложения не скрывает остальные;
 - меню до 32 подтверждённых Hermes-команд через `PATCH /me/commands`, `/menu`,
   `/start`, `/maxstatus` и inline-кнопки;
 - typing/typing_off, durable polling inbox и состояния pending/processing/
@@ -140,7 +142,10 @@ python -m pytest -q
 ```
 
 Для live-проверки задайте `MAX_BOT_TOKEN` и `MAX_CA_BUNDLE` только в окружении
-процесса и запустите `scripts/max_live_smoke.py`. Проверка
+процесса и запустите `scripts/max_live_smoke.py` без `--poll-seconds`, если
+gateway уже работает. Для исходящей медиа-проверки используйте
+`scripts/max_media_live_smoke.py`; для обезличенной диагностики upload-ответа —
+`scripts/max_upload_live_inspect.py`. Проверка
 `scripts/max_adapter_live_smoke.py` использует временный SQLite и collector
 вместо вызова модели Hermes; активный gateway не запускается и не
 перезапускается.

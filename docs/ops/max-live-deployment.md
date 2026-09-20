@@ -35,6 +35,22 @@ core or disabling Telegram permanently.
   the Hermes process after restart.
 - Repository test suite: `60 passed`.
 
+## Dev candidate verified on 2026-09-21
+
+- Isolated worktree: `hermes-agent-ru-messengers-dev`, branch `max-media-v1`.
+- The live plugin link was switched only to this external plugin checkout; the
+  previous checkout remains the rollback target at `hermes-agent-ru-messengers`.
+- The gateway was restarted in the maintenance window and remained `active`
+  with one MAX polling consumer.
+- Full suite: `118 passed`; loader smoke reported `writes_hermes_core=no`.
+- Direct `/me` and text delivery succeeded. A separate media smoke uploaded a
+  Cyrillic-named image and text document and delivered both through the real
+  MAX API. The live document send retried after MAX reported that processing
+  was not ready.
+- TLS remained verified. The plugin now combines the host trust context with
+  the deployment-managed MAX bundle, so the existing MAX-only bundle also
+  covers the upload CDN.
+
 ## Pending acceptance test
 
 The MAX API cannot safely emulate a user-originated message. Send a fresh message

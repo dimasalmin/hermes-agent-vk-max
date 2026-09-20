@@ -419,6 +419,49 @@ async def test_media_batch_delivers_successful_files_and_reports_partial_failure
 
 
 @pytest.mark.asyncio
+async def test_media_batch_splits_file_from_image_video(monkeypatch) -> None:
+    class _Client:
+        def __init__(self) -> None:
+            self.sent = []
+
+        async def upload_media(self, path, *, media_type, max_bytes, mime_type):
+            del path, max_bytes, mime_type
+            return {"token": f"{media_type}-token"}
+
+        async def send_message(self, target_id, text, **kwargs):
+            self.sent.append((target_id, text, kwargs))
+            mid = f"mid-{len(self.sent)}"
+            return {"message": {"body": {"mid": mid}}}
+
+    adapter = object.__new__(max_adapter_module.MaxAdapter)
+    adapter._client = _Client()
+    adapter._chat_target_types = {"user-1": "user"}
+    adapter._media_max_bytes = 1024
+    adapter._rate_limiter = max_adapter_module.MaxRateLimiter()
+
+    result = await adapter._send_media_files(
+        "user-1",
+        "mixed media",
+        [
+            ("photo.png", False),
+            ("clip.mp4", False),
+            ("report.pdf", False),
+        ],
+    )
+
+    assert result.success is True
+    assert len(adapter._client.sent) == 2
+    assert [item["type"] for item in adapter._client.sent[0][2]["attachments"]] == [
+        "image",
+        "video",
+    ]
+    assert adapter._client.sent[1][1] == ""
+    assert adapter._client.sent[1][2]["attachments"] == [
+        {"type": "file", "payload": {"token": "file-token"}}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_standalone_sender_delivers_media_files(monkeypatch, tmp_path) -> None:
     class _Client:
         sent = []

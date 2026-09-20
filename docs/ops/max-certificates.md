@@ -9,8 +9,9 @@ per-client PEM bundle and must be managed outside this repository.
 - Do not use `verify=False` in a local smoke or deployment.
 - A configured bundle must exist, be readable as ASCII PEM, and contain a
   non-empty `CERTIFICATE` block.
-- Keep the system roots and the current official chain required by the MAX API
-  endpoint in the deployment-managed bundle.
+- The plugin starts with the host trust store and adds certificates from
+  `MAX_CA_BUNDLE`; a MAX-only bundle is therefore valid. Keep the bundle
+  deployment-managed and limited to the current official MAX chain.
 - Record the bundle path, SHA-256 fingerprint, date and source in the operator
   change log. Do not commit the bundle itself.
 

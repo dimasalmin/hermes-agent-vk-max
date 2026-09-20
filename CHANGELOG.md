@@ -19,6 +19,12 @@
   expiry and single-use replay protection.
 - Added bounded inbound media caching, outbound `MEDIA:` uploads, standalone
   media delivery and `MAX_MEDIA_MAX_BYTES` configuration.
+- Matched the current MAX attachment rules: image/video batches use up to 12
+  items, while files and audio are split into compatible messages. Upload
+  tokens from the live `photos` id-map response are now extracted, and the
+  `attachment.not.ready` processing response is retried.
+- Added a TLS context that preserves system roots while adding the configured
+  MAX CA bundle; live image/document upload and delivery were verified.
 - Kept the feature in the external plugin; Hermes core remains unchanged.
 
 ## 0.2.0 - 2026-08-08

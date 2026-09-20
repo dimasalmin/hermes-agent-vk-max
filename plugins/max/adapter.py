@@ -334,6 +334,36 @@ def _send_result_from_ids(message_ids: Iterable[str]) -> Any:
     )
 
 
+def _attachment_batches(
+    attachments: Iterable[Mapping[str, Any]],
+) -> list[list[Mapping[str, Any]]]:
+    """Split MAX media into API-compatible messages.
+
+    MAX permits images/videos together, but a file cannot be combined with
+    them and only one file is allowed in a message.  Audio is kept separate
+    as well because the current API does not document mixed audio batches.
+    """
+
+    batches: list[list[Mapping[str, Any]]] = []
+    media_batch: list[Mapping[str, Any]] = []
+    for raw_attachment in attachments:
+        attachment = dict(raw_attachment)
+        attachment_type = str(attachment.get("type") or "").strip().lower()
+        if attachment_type in {"file", "audio"}:
+            if media_batch:
+                batches.append(media_batch)
+                media_batch = []
+            batches.append([attachment])
+            continue
+        media_batch.append(attachment)
+        if len(media_batch) >= MAX_ATTACHMENTS_PER_MESSAGE:
+            batches.append(media_batch)
+            media_batch = []
+    if media_batch:
+        batches.append(media_batch)
+    return batches
+
+
 def _config_extra(config: Any) -> dict[str, Any]:
     value = getattr(config, "extra", {}) or {}
     return dict(value) if isinstance(value, Mapping) else {}
@@ -1581,8 +1611,11 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
         human_delay: float = 0.0,
     ) -> None:
         if len(images) > MAX_ATTACHMENTS_PER_MESSAGE:
-            logger.warning("MAX image batch exceeds %d attachments", MAX_ATTACHMENTS_PER_MESSAGE)
-        for image_url, alt_text in list(images)[:MAX_ATTACHMENTS_PER_MESSAGE]:
+            logger.info(
+                "MAX image batch has %d items; sending in separate messages",
+                len(images),
+            )
+        for image_url, alt_text in images:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
             result = await self.send_image(
@@ -1714,11 +1747,6 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
         attachments: list[Mapping[str, Any]] = []
         if not media_files:
             return SendResult(success=False, error="MAX media attachment list is empty")
-        if len(media_files) > MAX_ATTACHMENTS_PER_MESSAGE:
-            return SendResult(
-                success=False,
-                error=f"MAX supports at most {MAX_ATTACHMENTS_PER_MESSAGE} attachments per message",
-            )
         upload_errors: list[str] = []
         for item in media_files:
             try:
@@ -1761,11 +1789,13 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             )
 
         chunks = split_message(content, MAX_MESSAGE_LENGTH) if content else [""]
+        attachment_batches = _attachment_batches(attachments)
         message_ids: list[str] = []
-        for index, chunk in enumerate(chunks):
+        send_errors: list[str] = []
+        for batch_index, batch in enumerate(attachment_batches):
             await self._rate_limiter.acquire(transport_chat_id)
-            link = _reply_link(reply_to) if index == 0 else None
-            chunk_attachments = attachments if index == 0 else None
+            chunk = chunks[0] if batch_index == 0 else ""
+            link = _reply_link(reply_to) if batch_index == 0 else None
 
             async def _send() -> Mapping[str, Any]:
                 return await self._client.send_message(
@@ -1773,7 +1803,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
                     chunk,
                     target_type=target_type,
                     link=link,
-                    attachments=chunk_attachments,
+                    attachments=batch,
                 )
 
             try:
@@ -1784,23 +1814,52 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
                     max_attempts=5,
                 )
             except MaxApiError as exc:
-                return SendResult(
-                    success=False,
-                    error=str(exc),
-                    retryable=exc.retryable,
-                    retry_after=exc.retry_after,
-                )
+                send_errors.append(str(exc))
+                continue
             message_id = _response_message_id(response)
             if message_id:
                 message_ids.append(message_id)
+
+        if message_ids:
+            for chunk in chunks[1:]:
+                await self._rate_limiter.acquire(transport_chat_id)
+
+                async def _send_continuation() -> Mapping[str, Any]:
+                    return await self._client.send_message(
+                        transport_chat_id,
+                        chunk,
+                        target_type=target_type,
+                    )
+
+                try:
+                    response = await with_backoff(
+                        _send_continuation,
+                        is_rate_limit=_is_max_rate_limit,
+                        extract_retry_after=_retry_after,
+                    )
+                except MaxApiError as exc:
+                    send_errors.append(str(exc))
+                    continue
+                message_id = _response_message_id(response)
+                if message_id:
+                    message_ids.append(message_id)
+
+        if not message_ids:
+            return SendResult(
+                success=False,
+                error="; ".join(upload_errors + send_errors)
+                or "MAX media messages failed",
+                error_kind="media_send",
+            )
         result = _send_result_from_ids(message_ids)
-        if upload_errors:
+        if upload_errors or send_errors:
             return SendResult(
                 success=False,
                 message_id=getattr(result, "message_id", None),
                 continuation_message_ids=getattr(result, "continuation_message_ids", ()),
                 raw_response=getattr(result, "raw_response", None),
-                error="Часть вложений не доставлена: " + "; ".join(upload_errors),
+                error="Часть вложений не доставлена: "
+                + "; ".join(upload_errors + send_errors),
                 error_kind="partial_media",
             )
         return result
@@ -2239,10 +2298,7 @@ async def standalone_send(
             media_max_bytes = min(max(1, media_max_bytes), DEFAULT_MEDIA_MAX_BYTES)
             attachments: list[Mapping[str, Any]] = []
             raw_media_files = list(media_files or [])
-            if len(raw_media_files) > MAX_ATTACHMENTS_PER_MESSAGE:
-                return {
-                    "error": f"MAX supports at most {MAX_ATTACHMENTS_PER_MESSAGE} attachments per message"
-                }
+            upload_errors: list[str] = []
             for media_path in raw_media_files:
                 if isinstance(media_path, (tuple, list)):
                     path = str(media_path[0])
@@ -2255,41 +2311,78 @@ async def standalone_send(
                 except (OSError, RuntimeError, ValueError):
                     safe_path = None
                 if not safe_path:
-                    return {"error": "MAX standalone attachment path is not allowed"}
+                    upload_errors.append("MAX standalone attachment path is not allowed")
+                    continue
                 media_type = media_type_for_file(path, force_document=force_document)
                 if is_voice and not force_document:
                     media_type = media_type_for_file(path, is_voice=True)
-                upload = await with_backoff(
-                    lambda: client.upload_media(
-                        safe_path,
-                        media_type=media_type,
-                        max_bytes=media_max_bytes,
-                        mime_type=mime_type_for_file(safe_path, media_type),
-                    ),
-                    is_rate_limit=_is_retryable_media_error,
-                    extract_retry_after=_media_retry_after,
-                    max_attempts=5,
-                )
-                token_value = str(upload.get("token") or "").strip()
-                if not token_value:
-                    raise MaxApiError("MAX media upload returned no attachment token")
-                attachments.append({"type": media_type, "payload": {"token": token_value}})
+                try:
+                    upload = await with_backoff(
+                        lambda: client.upload_media(
+                            safe_path,
+                            media_type=media_type,
+                            max_bytes=media_max_bytes,
+                            mime_type=mime_type_for_file(safe_path, media_type),
+                        ),
+                        is_rate_limit=_is_retryable_media_error,
+                        extract_retry_after=_media_retry_after,
+                        max_attempts=5,
+                    )
+                    token_value = str(upload.get("token") or "").strip()
+                    if not token_value:
+                        raise MaxApiError("MAX media upload returned no attachment token")
+                    attachments.append({"type": media_type, "payload": {"token": token_value}})
+                except (MaxApiError, OSError, TypeError, ValueError) as exc:
+                    upload_errors.append(str(exc))
+            if not attachments:
+                return {"error": "; ".join(upload_errors) or "MAX media uploads failed"}
+
             last_id = None
+            send_errors: list[str] = []
             chunks = split_message(message, MAX_MESSAGE_LENGTH) if message else [""]
-            for index, chunk in enumerate(chunks):
-                response = await with_backoff(
-                    lambda: client.send_message(
-                        str(chat_id),
-                        chunk,
-                        target_type=target_type,
-                        attachments=attachments if index == 0 else None,
-                    ),
-                    is_rate_limit=_is_media_send_retryable,
-                    extract_retry_after=_media_retry_after,
-                    max_attempts=5,
-                )
-                last_id = _response_message_id(response)
-            return {"success": True, "platform": PLATFORM_NAME, "chat_id": str(chat_id), "message_id": last_id}
+            for batch_index, batch in enumerate(_attachment_batches(attachments)):
+                chunk = chunks[0] if batch_index == 0 else ""
+                try:
+                    response = await with_backoff(
+                        lambda: client.send_message(
+                            str(chat_id),
+                            chunk,
+                            target_type=target_type,
+                            attachments=batch,
+                        ),
+                        is_rate_limit=_is_media_send_retryable,
+                        extract_retry_after=_media_retry_after,
+                        max_attempts=5,
+                    )
+                    last_id = _response_message_id(response) or last_id
+                except MaxApiError as exc:
+                    send_errors.append(str(exc))
+            if last_id:
+                for chunk in chunks[1:]:
+                    try:
+                        response = await with_backoff(
+                            lambda: client.send_message(
+                                str(chat_id), chunk, target_type=target_type
+                            ),
+                            is_rate_limit=_is_media_send_retryable,
+                            extract_retry_after=_media_retry_after,
+                            max_attempts=5,
+                        )
+                        last_id = _response_message_id(response) or last_id
+                    except MaxApiError as exc:
+                        send_errors.append(str(exc))
+            errors = upload_errors + send_errors
+            if not last_id:
+                return {"error": "; ".join(errors) or "MAX media messages failed"}
+            result = {
+                "success": not errors,
+                "platform": PLATFORM_NAME,
+                "chat_id": str(chat_id),
+                "message_id": last_id,
+            }
+            if errors:
+                result["error"] = "Часть вложений не доставлена: " + "; ".join(errors)
+            return result
         finally:
             await client.close()
     except (MaxApiError, ValueError, OSError) as exc:
