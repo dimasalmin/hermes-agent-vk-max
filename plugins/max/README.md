@@ -1,20 +1,22 @@
-# MAX Hermes plugin
+# Плагин MAX для Hermes
 
-This directory is intentionally self-contained because Hermes loads external
-plugins as `hermes_plugins.<slug>`. Keep internal imports relative and do not
-depend on sibling packages from this repository.
+Каталог самодостаточен: Hermes загружает внешние плагины как
+`hermes_plugins.<slug>`. Внутренние импорты должны оставаться относительными;
+плагин не должен зависеть от соседних пакетов репозитория.
 
-The plugin targets MAX Bot API v2 at `platform-api2.max.ru` and uses the public
-Hermes platform adapter contract. The current release path includes text,
-native media delivery, inbound media caching, slash-command registration,
-inline buttons, DM/group access policy, Webhook and development Long Polling.
-The native command menu is registered through `PATCH /me/commands`; `/start`,
-`/menu` and `/commands` also send an ordinary-text command list for MAX clients
-that do not render the native menu.
+Плагин работает с MAX Bot API v2 через `platform-api2.max.ru` и использует
+публичный контракт адаптера Hermes. Реализованы текст, двусторонняя доставка
+изображений, документов, аудио и видео, кеширование входящих вложений,
+регистрация slash-команд, inline-кнопки, политика доступа для DM и групп,
+Webhook и Long Polling для разработки.
 
-Install this directory as `~/.hermes/plugins/max/` with the lowercase
-`plugin.yaml` manifest. Do not install it inside the Hermes source tree.
+Нативное меню регистрируется через `PATCH /me/commands`. Команды `/start`,
+`/menu` и `/commands` дополнительно отправляют список обычным текстом, если
+клиент MAX не показывает системное меню бота.
 
-See the Russian setup guide at `../../docs/ru/max-setup.md`, the interactive
-button guide at `../../docs/ru/max-interactive.md`, and the implementation
-record at `../../docs/analysis/2026-09-20-max-media-implementation.md`.
+Установите этот каталог как `~/.hermes/plugins/max/` вместе с манифестом
+`plugin.yaml` в нижнем регистре. Не копируйте его в исходное дерево Hermes.
+
+Основная инструкция: `../../docs/ru/max-setup.md`; интерактивные сценарии:
+`../../docs/ru/max-interactive.md`; журнал реализации:
+`../../docs/analysis/2026-09-20-max-media-implementation.md`.
