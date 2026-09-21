@@ -42,6 +42,9 @@ The MAX plugin currently provides text, native media and interactive controls:
 - MAX slash-command registration, `/menu`, `/start`, `/maxstatus`, inline
   command buttons and typing actions. `/start`, `/menu` and `/commands` also
   include a visible text list because MAX clients may hide the native menu.
+  The current validated installation exposes 16 commands; the exact list
+  follows the installed Hermes registry and is documented in the MAX setup
+  guide.
 - Durable polling/Webhook inbox state with explicit failed diagnostics and no
   silent automatic replay of ambiguous processing.
 - Configurable `MAX_MEDIA_MAX_BYTES` limit (50 MiB by default) and CDN URL

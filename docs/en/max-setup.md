@@ -107,6 +107,32 @@ bypass Hermes global authorization.
 - Store availability, CDN reachability and whitelist behavior require a dated
   operator/region field test.
 
+### MAX command menu
+
+The plugin registers up to 32 commands through `PATCH /me/commands`. The exact
+set follows the command registry of the installed Hermes version. The current
+validated installation exposes:
+
+```text
+/menu /commands /help /status /new /stop /model /compress
+/sessions /resume /retry /undo /agents /whoami /queue /maxstatus
+```
+
+If a MAX client does not render the native bot menu, send `/commands` or
+`/menu`: the plugin replies with the same list as ordinary text and adds
+buttons. After a gateway restart, the log should contain a line like
+`MAX command menu registered (N): ...`.
+
+To verify registration without polling or model execution:
+
+```bash
+python scripts/max_commands_live_smoke.py
+```
+
+The script performs only `GET /me`, `PATCH /me/commands`, and a second
+`GET /me`; it never prints the token or chat content. Run it with one polling
+owner at a time so the diagnostic call is not confused with event handling.
+
 ## 8. Verification and rollback
 
 ```powershell

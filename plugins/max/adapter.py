@@ -608,8 +608,14 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
     async def _register_commands(self) -> None:
         if self._client is None or not callable(getattr(self._client, "set_bot_commands", None)):
             return
+        commands = self._max_commands()
         try:
-            await self._client.set_bot_commands(self._max_commands())
+            await self._client.set_bot_commands(commands)
+            logger.info(
+                "MAX command menu registered (%d): %s",
+                len(commands),
+                ",".join(item["name"] for item in commands),
+            )
         except (MaxApiError, ValueError) as exc:
             # Menu registration is best effort.  A MAX API rollout must not
             # disable text/media delivery when PATCH /me/commands is down.

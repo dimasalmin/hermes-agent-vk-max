@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 from types import SimpleNamespace
 
+import pytest
+
 import plugins.max.adapter as adapter_module
 from plugins.max.adapter import (
     MaxAdapter,
@@ -105,6 +107,24 @@ def test_max_menu_text_contains_explicit_command_list() -> None:
     assert "Доступные команды Hermes:" in text
     assert "/commands" in text
     assert "/maxstatus" in text
+
+
+@pytest.mark.asyncio
+async def test_max_command_registration_uses_visible_command_list() -> None:
+    adapter = object.__new__(MaxAdapter)
+    captured: list[dict[str, str]] = []
+
+    class Client:
+        async def set_bot_commands(self, commands: list[dict[str, str]]) -> None:
+            captured.extend(commands)
+
+    adapter._client = Client()
+
+    await adapter._register_commands()
+
+    names = [item["name"] for item in captured]
+    assert "commands" in names
+    assert "maxstatus" in names
 
 
 def test_incoming_video_maps_to_video_message_type() -> None:
