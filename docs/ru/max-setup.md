@@ -21,7 +21,7 @@
 
 ```bash
 python -m pip install -e ".[dev]"
-ln -s "/path/to/hermes-agent-ru-messengers/plugins/max" "$HOME/.hermes/plugins/max"
+ln -s "/path/to/hermes-agent-vk-max/plugins/max" "$HOME/.hermes/plugins/max"
 ```
 
 В Windows вместо `ln -s` используйте junction или каталог-копию. Внутри

@@ -14,7 +14,7 @@
 4. Проверьте `hermes plugins list --user`, `hermes doctor`, затем выполните
    `hermes gateway restart` и отправьте тестовое сообщение.
 
-Полная русская инструкция: [настройка MAX](https://github.com/dimasalmin/hermes-agent-ru-messengers/blob/main/docs/ru/max-setup.md).
+Полная русская инструкция: [настройка MAX](https://github.com/dimasalmin/hermes-agent-vk-max/blob/main/docs/ru/max-setup.md).
 
 ## English summary
 

@@ -25,7 +25,7 @@
 GitHub:
 
 ```bash
-hermes plugins install dimasalmin/hermes-agent-ru-messengers/plugins/vk --enable
+hermes plugins install dimasalmin/hermes-agent-vk-max/plugins/vk --enable
 ```
 
 После установки проверьте plugin и перезапустите gateway:

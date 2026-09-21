@@ -7,9 +7,9 @@ description: >
   нативными callback-событиями и ограниченным транспортом медиа.
   English: Hermes Agent adapter for VK community bots using Community Long
   Poll, native callbacks, and bounded media transport.
-author: hermes-agent-ru-messengers contributors
+author: hermes-agent-vk-max contributors
 license: MIT
-homepage: https://github.com/dimasalmin/hermes-agent-ru-messengers
+homepage: https://github.com/dimasalmin/hermes-agent-vk-max
 
 requires_env:
   - name: VK_GROUP_TOKEN
@@ -17,7 +17,7 @@ requires_env:
     prompt: "Ключ доступа сообщества VK"
     password: true
     category: messaging
-    url: "https://github.com/dimasalmin/hermes-agent-ru-messengers/blob/main/docs/ru/vk-setup.md"
+    url: "https://github.com/dimasalmin/hermes-agent-vk-max/blob/main/docs/ru/vk-setup.md"
   - name: VK_GROUP_ID
     description: "Числовой ID сообщества VK; numeric group/community ID"
     prompt: "Числовой ID сообщества VK"

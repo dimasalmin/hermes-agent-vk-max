@@ -13,7 +13,7 @@
    `hermes gateway restart` и отправьте тестовое DM.
 
 Не включайте `VK_ALLOW_ALL_USERS=true` на публичном боте без отдельного решения
-владельца. Полная русская инструкция: [настройка VK](https://github.com/dimasalmin/hermes-agent-ru-messengers/blob/main/docs/ru/vk-setup.md).
+владельца. Полная русская инструкция: [настройка VK](https://github.com/dimasalmin/hermes-agent-vk-max/blob/main/docs/ru/vk-setup.md).
 
 ## English summary
 
