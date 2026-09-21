@@ -7,7 +7,7 @@ Poll. Ядро Hermes не изменяется, поэтому plugin можн�
 Установка из ссылки на репозиторий:
 
 ```bash
-hermes plugins install dimasalmin/hermes-agent-ru-messengers/plugins/vk --enable
+hermes plugins install dimasalmin/hermes-agent-vk-max/plugins/vk --enable
 ```
 
 Реализованы прямой HTTP-транспорт VK и Community Long Poll, устойчивое
@@ -27,11 +27,11 @@ VK_GROUP_ID=<numeric community id>
 VK_ALLOWED_USERS=<comma-separated VK user ids>
 ```
 
-Полная русская инструкция: [настройка VK](https://github.com/dimasalmin/hermes-agent-ru-messengers/blob/main/docs/ru/vk-setup.md).
+Полная русская инструкция: [настройка VK](https://github.com/dimasalmin/hermes-agent-vk-max/blob/main/docs/ru/vk-setup.md).
 
 ## English summary
 
 External VK Community Long Poll plugin with allowlists, SQLite state,
 callbacks, pairing and bounded media transport. Install only the `plugins/vk`
 subdirectory, keep tokens out of chat history, and use the
-[English setup guide](https://github.com/dimasalmin/hermes-agent-ru-messengers/blob/main/docs/en/vk-setup.md).
+[English setup guide](https://github.com/dimasalmin/hermes-agent-vk-max/blob/main/docs/en/vk-setup.md).

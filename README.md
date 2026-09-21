@@ -30,13 +30,13 @@
 Для MAX:
 
 ```bash
-hermes plugins install dimasalmin/hermes-agent-ru-messengers/plugins/max --enable
+hermes plugins install dimasalmin/hermes-agent-vk-max/plugins/max --enable
 ```
 
 Для VK:
 
 ```bash
-hermes plugins install dimasalmin/hermes-agent-ru-messengers/plugins/vk --enable
+hermes plugins install dimasalmin/hermes-agent-vk-max/plugins/vk --enable
 ```
 
 Агент должен проверить `hermes plugins list`, выполнить `hermes doctor`,

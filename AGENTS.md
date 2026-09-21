@@ -31,17 +31,17 @@
 
 ```bash
 # MAX
-hermes plugins install dimasalmin/hermes-agent-ru-messengers/plugins/max --enable
+hermes plugins install dimasalmin/hermes-agent-vk-max/plugins/max --enable
 
 # VK
-hermes plugins install dimasalmin/hermes-agent-ru-messengers/plugins/vk --enable
+hermes plugins install dimasalmin/hermes-agent-vk-max/plugins/vk --enable
 ```
 
 Полная URL-форма также поддерживается:
 
 ```text
-https://github.com/dimasalmin/hermes-agent-ru-messengers/tree/main/plugins/max
-https://github.com/dimasalmin/hermes-agent-ru-messengers/tree/main/plugins/vk
+https://github.com/dimasalmin/hermes-agent-vk-max/tree/main/plugins/max
+https://github.com/dimasalmin/hermes-agent-vk-max/tree/main/plugins/vk
 ```
 
 Не устанавливайте корень репозитория как один plugin и не копируйте файлы в

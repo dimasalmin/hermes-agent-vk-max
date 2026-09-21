@@ -4,7 +4,7 @@ This note records the current local deployment without storing credentials.
 
 ## Runtime layout
 
-- Plugin repository: `hermes-agent-ru-messengers`.
+- Plugin repository: `hermes-agent-vk-max`.
 - Hermes plugin link: `~/.hermes/plugins/max` -> this repository's `plugins/max`.
 - Secret file: `~/.hermes/.env`, loaded by the user systemd service, mode `600`.
 - MAX trust bundle: `~/.hermes/max-ca-bundle.pem`, mode `600`.

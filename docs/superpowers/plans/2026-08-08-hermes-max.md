@@ -49,7 +49,7 @@ Not yet release-ready: disposable-bot media acceptance, streaming edit coalescin
 
 ### Task 0.2: Reproduce the local prototype baseline
 
-- [x] Run `python -m pytest tests -q` in `hermes-agent-ru-messengers`.
+- [x] Run `python -m pytest tests -q` in `hermes-agent-vk-max`.
 - [x] Preserve the result as a legacy baseline, currently 29 passing tests.
 - [x] Do not claim live Hermes integration until plugin discovery and a runtime smoke pass.
 
