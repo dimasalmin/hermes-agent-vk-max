@@ -1,17 +1,27 @@
-name: VK plugin
+name: MAX and VK plugins
 
 on:
   push:
     paths:
+      - "plugins/max/**"
       - "plugins/vk/**"
+      - "plugins/_ru_common/**"
+      - "tests/test_max_*.py"
       - "tests/test_vk_*.py"
+      - "tests/test_common.py"
+      - "scripts/max_*.py"
       - "scripts/vk_*.py"
       - "pyproject.toml"
       - ".github/workflows/vk-plugin.yml"
   pull_request:
     paths:
+      - "plugins/max/**"
       - "plugins/vk/**"
+      - "plugins/_ru_common/**"
+      - "tests/test_max_*.py"
       - "tests/test_vk_*.py"
+      - "tests/test_common.py"
+      - "scripts/max_*.py"
       - "scripts/vk_*.py"
       - "pyproject.toml"
       - ".github/workflows/vk-plugin.yml"
@@ -35,8 +45,8 @@ jobs:
           cache: pip
       - name: Install development dependencies
         run: python -m pip install -e ".[dev]"
-      - name: Compile VK plugin and tests
-        run: python -m compileall -q plugins/vk tests scripts
+      - name: Compile MAX and VK plugins and tests
+        run: python -m compileall -q plugins/max plugins/vk plugins/_ru_common tests scripts
       - name: Run MAX and VK regression suite
         run: python -m pytest -q
 

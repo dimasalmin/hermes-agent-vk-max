@@ -20,6 +20,17 @@ from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 from urllib.parse import unquote, urlsplit
 
+
+def _fallback_validate_media_delivery_path(path: str) -> Optional[str]:
+    """Validate a local file when Hermes is not installed for standalone tests."""
+
+    try:
+        candidate = Path(path).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return str(candidate) if candidate.is_file() else None
+
+
 try:
     from gateway.config import Platform, PlatformConfig
     from gateway.platforms.base import (
@@ -69,6 +80,13 @@ except ImportError:  # pragma: no cover - used only by standalone unit tests
 
         async def handle_message(self, _event: Any) -> None:
             return None
+
+        @staticmethod
+        def validate_media_delivery_path(
+            path: str, session_key: str = ""
+        ) -> Optional[str]:
+            del session_key
+            return _fallback_validate_media_delivery_path(path)
 
     BasePlatformAdapter = _FallbackBase  # type: ignore[misc,assignment]
     Platform = None  # type: ignore[assignment]
@@ -577,9 +595,11 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             "queue", "background", "maxstatus",
         ]
         registry: dict[str, Any] = {}
+        registry_available = False
         try:
             from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available
 
+            registry_available = True
             for item in COMMAND_REGISTRY:
                 if getattr(item, "cli_only", False):
                     continue
@@ -596,6 +616,12 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
                 continue
             item = registry.get(name)
             if item is None:
+                # Unit tests and standalone plugin tools intentionally run
+                # without a Hermes checkout.  Keep only the stable session
+                # status command visible there; an installed Hermes registry
+                # remains authoritative in production.
+                if not registry_available and name in {"help", "status"}:
+                    result.append({"name": name, "description": descriptions[name]})
                 continue
             result.append(
                 {
