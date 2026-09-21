@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Iterable, Optional, Set
 
 
-ALWAYS_ALLOWED_COMMANDS = frozenset({"help", "whoami"})
+ALWAYS_ALLOWED_COMMANDS = frozenset({"help", "whoami", "menu", "maxstatus"})
 
 
 def parse_id_list(value: Optional[str]) -> Set[str]:
@@ -43,6 +43,7 @@ class AccessPolicy:
         group_allowed_chats_env: Optional[str],
         allow_all_env: Optional[str],
         guest_mode_env: Optional[str],
+        admin_users_env: Optional[str] = None,
         extra: Optional[dict] = None,
     ) -> "AccessPolicy":
         extra = extra or {}
@@ -59,7 +60,7 @@ class AccessPolicy:
             allowed_users=parse_id_list(allowed_users_env) | _from_extra("allow_from"),
             group_allowed_users=parse_id_list(group_allowed_users_env) | _from_extra("group_allow_from"),
             group_allowed_chats=parse_id_list(group_allowed_chats_env) | _from_extra("group_allowed_chats"),
-            admin_users=_from_extra("allow_admin_from"),
+            admin_users=parse_id_list(admin_users_env) | _from_extra("allow_admin_from"),
             user_allowed_commands=_from_extra("user_allowed_commands"),
             group_user_allowed_commands=_from_extra("group_user_allowed_commands"),
             guest_mode=(guest_mode_env or "").lower() in {"1", "true", "yes"},
@@ -74,13 +75,20 @@ class AccessPolicy:
     def can_group(self, user_id: str, chat_id: str, *, mentioned: bool) -> bool:
         if self.allow_all:
             return True
-        if user_id in self.allowed_users or user_id in self.group_allowed_users:
+        allowed_user = (
+            user_id in self.allowed_users
+            or user_id in self.group_allowed_users
+            or user_id in self.admin_users
+        )
+        allowed_chat = chat_id in self.group_allowed_chats
+        if allowed_user and allowed_chat:
             return True
-        if chat_id in self.group_allowed_chats:
-            return True
-        if self.guest_mode and mentioned:
-            return True
-        return False
+        # Guest mode remains an explicit opt-in, but still cannot open an
+        # arbitrary group: the chat itself must be allowlisted.
+        return bool(self.guest_mode and mentioned and allowed_chat)
+
+    def is_admin(self, user_id: str) -> bool:
+        return self.allow_all or str(user_id).strip() in self.admin_users
 
     def can_run_command(
         self,

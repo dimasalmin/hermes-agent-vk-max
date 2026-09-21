@@ -103,9 +103,26 @@ class MaxCallbackStore:
             if entry.expires_at <= now:
                 del self._entries[token]
                 return None
-            if entry.user_id != str(user_id).strip() or entry.chat_id != str(chat_id).strip():
+            if entry.user_id not in {"*", str(user_id).strip()} or entry.chat_id != str(chat_id).strip():
                 return None
             del self._entries[token]
+            return entry
+
+    def peek(self, payload: str) -> Optional[MaxCallbackEntry]:
+        """Inspect a live entry without consuming its one-shot token."""
+
+        parsed = self.parse(payload)
+        if parsed is None:
+            return None
+        kind, token = parsed
+        now = self._clock()
+        with self._lock:
+            entry = self._entries.get(token)
+            if entry is None or entry.kind != kind:
+                return None
+            if entry.expires_at <= now:
+                del self._entries[token]
+                return None
             return entry
 
     def _prune(self, now: float) -> None:

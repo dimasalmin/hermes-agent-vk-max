@@ -90,10 +90,20 @@ class MaxWebhookReceiver:
                     status TEXT NOT NULL,
                     attempts INTEGER NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL,
-                    processed_at REAL
+                    processed_at REAL,
+                    started_at REAL,
+                    last_error TEXT
                 )
                 """
             )
+            columns = {
+                str(row[1])
+                for row in self._conn.execute("PRAGMA table_info(max_webhook_inbox)").fetchall()
+            }
+            if "started_at" not in columns:
+                self._conn.execute("ALTER TABLE max_webhook_inbox ADD COLUMN started_at REAL")
+            if "last_error" not in columns:
+                self._conn.execute("ALTER TABLE max_webhook_inbox ADD COLUMN last_error TEXT")
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS max_webhook_inbox_status_idx "
                 "ON max_webhook_inbox(status, created_at)"
@@ -124,7 +134,7 @@ class MaxWebhookReceiver:
                     (key, payload, now),
                 )
                 self._conn.commit()
-            elif row[0] == "processed":
+            elif row[0] in {"processed", "processing", "failed"}:
                 return WebhookResult(status_code=200, accepted=False, duplicate=True, durable=True)
 
         queued = key in self._queued_keys
@@ -159,7 +169,8 @@ class MaxWebhookReceiver:
         key = _dedup_key(update)
         with self._lock:
             self._conn.execute(
-                "UPDATE max_webhook_inbox SET status = 'processed', processed_at = ? "
+                "UPDATE max_webhook_inbox SET status = 'processed', processed_at = ?, "
+                "last_error = NULL "
                 "WHERE event_key = ?",
                 (time.time(), key),
             )
@@ -169,10 +180,36 @@ class MaxWebhookReceiver:
         key = _dedup_key(update)
         with self._lock:
             self._conn.execute(
-                "UPDATE max_webhook_inbox SET attempts = attempts + 1 WHERE event_key = ?",
-                (key,),
+                "UPDATE max_webhook_inbox SET status = 'failed', attempts = attempts + 1, "
+                "last_error = ? WHERE event_key = ?",
+                ("processing failed", key),
             )
             self._conn.commit()
+
+    async def mark_processing(self, update: Mapping[str, Any]) -> None:
+        key = _dedup_key(update)
+        with self._lock:
+            self._conn.execute(
+                "UPDATE max_webhook_inbox SET status = 'processing', attempts = attempts + 1, "
+                "started_at = ? WHERE event_key = ? AND status = 'pending'",
+                (time.time(), key),
+            )
+            self._conn.commit()
+
+    def status_summary(self) -> dict[str, Any]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT status, COUNT(*) FROM max_webhook_inbox GROUP BY status"
+            ).fetchall()
+            last_error = self._conn.execute(
+                "SELECT last_error FROM max_webhook_inbox "
+                "WHERE last_error IS NOT NULL ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        summary = {str(status): int(count) for status, count in rows}
+        for status in ("pending", "processed", "failed"):
+            summary.setdefault(status, 0)
+        summary["last_error"] = str(last_error[0]) if last_error else None
+        return summary
 
     async def next_pending(self) -> Optional[Mapping[str, Any]]:
         try:

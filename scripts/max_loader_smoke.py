@@ -1,7 +1,7 @@
 """Read-only compatibility smoke for the current Hermes plugin loader.
 
 Usage from WSL:
-    python3 scripts/max_loader_smoke.py --hermes-root /home/user/.hermes/hermes-agent
+    python3 scripts/max_loader_smoke.py --hermes-root /home/xidden/.hermes/hermes-agent
 
 The script imports the plugin as Hermes does, captures registration metadata,
 and never writes to Hermes home, config, services, or the running gateway.

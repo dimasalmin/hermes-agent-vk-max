@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import os
+import ssl
 from pathlib import Path
 from typing import Mapping
 
 
-def tls_verify_from_env(env: Mapping[str, str] | None = None) -> bool | str:
+def tls_verify_from_env(env: Mapping[str, str] | None = None) -> bool | ssl.SSLContext:
     """Return a verified httpx CA setting without allowing insecure mode.
 
-    ``True`` delegates to the host trust store.  ``MAX_CA_BUNDLE`` can point
-    to a deployment-managed PEM bundle containing the host roots plus the
-    current official Russian trust chain required by MAX.
+    ``True`` delegates to the host trust store.  ``MAX_CA_BUNDLE`` adds a
+    deployment-managed PEM bundle to a context that already contains the
+    host roots.  MAX API and upload CDN endpoints can use different public
+    trust chains, so replacing the system roots with a small custom bundle is
+    not sufficient.
     """
 
     values = env if env is not None else os.environ
@@ -36,4 +39,9 @@ def tls_verify_from_env(env: Mapping[str, str] | None = None) -> bool | str:
         body = block.split(end, 1)[0].strip()
         if not body:
             raise ValueError(f"MAX CA bundle contains an empty certificate: {path}")
-    return str(path)
+    context = ssl.create_default_context()
+    try:
+        context.load_verify_locations(cafile=str(path))
+    except ssl.SSLError as exc:
+        raise ValueError(f"MAX CA bundle contains invalid certificates: {path}") from exc
+    return context

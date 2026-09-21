@@ -20,7 +20,7 @@ from types import SimpleNamespace
 # Run against the selected Hermes release, independent of the script path.
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 HERMES_ROOT = Path(
-    os.environ.get("HERMES_ROOT", "/home/user/.hermes/hermes-agent-current")
+    os.environ.get("HERMES_ROOT", "/home/xidden/.hermes/hermes-agent-current")
 ).expanduser()
 sys.path.insert(0, str(HERMES_ROOT))
 sys.path.insert(0, str(REPOSITORY_ROOT))

@@ -17,6 +17,13 @@
   expiry and single-use replay protection.
 - Added bounded inbound media caching, outbound `MEDIA:` uploads, standalone
   media delivery and `MAX_MEDIA_MAX_BYTES` configuration.
+- Added native MAX image/document/audio/video adapter methods, upload-token
+  handling, media batching, inbound video resolution and partial-failure
+  reporting for the external plugin.
+- Added MAX `/menu`, `/start`, `/commands` and `/maxstatus`; the command list is
+  also returned as ordinary text when a client hides the native menu.
+- Added a redacted `max_commands_live_smoke.py` check and startup logging for
+  the exact command names registered through `PATCH /me/commands`.
 - Kept the feature in the external plugin; Hermes core remains unchanged.
 
 ## 0.2.0 - 2026-08-08

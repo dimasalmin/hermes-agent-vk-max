@@ -1,6 +1,6 @@
 # Подключение MAX к Hermes Agent
 
-Это инструкция для текущего MVP. Плагин не обещает универсальную
+Это инструкция для текущего внешнего плагина. Плагин не обещает универсальную
 доступность MAX при любых региональных ограничениях связи: результат зависит
 от региона, оператора, устройства и режима ограничения.
 
@@ -17,24 +17,7 @@
 
 ## 2. Установка без изменения Hermes core
 
-Рекомендуемый способ для Hermes Agent — установить подкаталог напрямую из
-GitHub. Корень этого репозитория содержит два плагина и не устанавливается как
-один plugin:
-
-```bash
-hermes plugins install dimasalmin/hermes-agent-ru-messengers/plugins/max --enable
-```
-
-После установки проверьте plugin и перезапустите gateway:
-
-```bash
-hermes plugins list --user
-hermes doctor
-hermes gateway restart
-```
-
-Для разработки из локального checkout репозиторий должен оставаться отдельным
-от Hermes:
+Репозиторий плагина должен оставаться отдельным от Hermes:
 
 ```bash
 python -m pip install -e ".[dev]"
@@ -50,7 +33,11 @@ ln -s "/path/to/hermes-agent-ru-messengers/plugins/max" "$HOME/.hermes/plugins/m
 ```env
 MAX_BOT_TOKEN=<token MAX для бизнеса>
 MAX_ALLOWED_USERS=<числовые user_id через запятую>
-# Необязательно: максимум одного входящего/исходящего файла, 50 MiB по умолчанию.
+# Для групп нужны одновременно разрешённые пользователи и чаты.
+MAX_GROUP_ALLOWED_USERS=<user_id через запятую>
+MAX_GROUP_ALLOWED_CHATS=<chat_id через запятую>
+MAX_ADMIN_USERS=<администраторы групп через запятую>
+# Необязательно: максимум 50 MiB на одно входящее/исходящее вложение.
 MAX_MEDIA_MAX_BYTES=52428800
 ```
 
@@ -68,8 +55,9 @@ bundle:
 MAX_CA_BUNDLE=/etc/hermes/max-ca-bundle.pem
 ```
 
-В bundle должны входить системные корни и актуальная доверенная цепочка,
-необходимая MAX. Нельзя исправлять проблему через `verify=False`.
+Плагин сохраняет системные корни ОС и добавляет сертификаты из указанного
+bundle. Поэтому bundle может содержать только актуальную доверенную цепочку
+MAX; нельзя исправлять проблему через `verify=False`.
 
 ## 5. Webhook
 
@@ -92,8 +80,8 @@ python scripts/max_webhook_server.py
 
 `MAX_INBOX_PATH` должен указывать на один и тот же SQLite-файл у ingress и
 Hermes. Публичный HTTPS/443 и TLS termination остаются ответственностью
-reverse proxy. Подробности: `deployment runbook` и
-`TLS deployment notes`.
+reverse proxy. Подробности: `docs/ops/max-upgrade-safe.md` и
+`docs/ops/max-certificates.md`.
 
 ## 6. Политика доступа
 
@@ -102,7 +90,14 @@ reverse proxy. Подробности: `deployment runbook` и
 - `MAX_ALLOWED_USERS` — разрешённые DM и группы;
 - `MAX_GROUP_ALLOWED_USERS` — пользователи только для групп;
 - `MAX_GROUP_ALLOWED_CHATS` — разрешённые group chat ID;
+- `MAX_ADMIN_USERS` — пользователи, которым разрешены approval и управляющие
+  действия в группах;
 - `MAX_ALLOW_ALL_USERS=true` — только временная разработческая настройка.
+
+Доступ в группе проверяется как логическое «И»: отправитель должен быть в
+пользовательском allowlist, а чат — в `MAX_GROUP_ALLOWED_CHATS`. В группах
+контекст Hermes разделяется по паре `chat_id + user_id`; физическая доставка
+при этом возвращается в исходный MAX chat ID.
 
 Важно: текущий глобальный Hermes registry сначала применяет
 `MAX_ALLOWED_USERS`. Поэтому пользователи, которым разрешён доступ только в
@@ -114,20 +109,59 @@ reverse proxy. Подробности: `deployment runbook` и
 
 ## 7. Что сейчас реализовано
 
-- текстовые DM и базовый group routing;
+- текстовые DM и закрытые group routing с раздельными сессиями участников;
 - нормализация `body.mid` и `recipient.chat_type`;
 - chunking до 4000 символов;
 - `Authorization` и API v2;
 - Long Polling с marker;
 - Webhook secret, ACK decision, bounded queue и dedup;
 - Hermes plugin contract, YAML hook и standalone sender;
-- входящие image/audio/video/file через локальный Hermes media cache;
-- исходящие `MEDIA:` через актуальный `/uploads` и `payload.token`;
+- входящие image/audio/video/file через локальный Hermes media cache, включая
+  разрешение video-token через `GET /videos/{token}`;
+- исходящие изображения, документы, audio/voice, video, animation, `MEDIA:` и
+  standalone/cron через общий `/uploads` → multipart `data` → message поток;
+- несколько вложений, кириллические имена и `[[as_document]]`; изображения и
+  видео группируются до 12 вложений, файлы и аудио отправляются отдельными
+  совместимыми сообщениями; ошибка одного вложения не скрывает остальные;
+- меню до 32 подтверждённых Hermes-команд через `PATCH /me/commands`, `/menu`,
+  `/start`, `/commands`, `/maxstatus` и inline-кнопки; список команд также
+  дублируется текстом, если клиент MAX не показывает системное меню;
+- typing/typing_off, durable polling inbox и состояния pending/processing/
+  processed/failed без автоматического повтора неоднозначного события;
 - ограничение размера и проверка официальных HTTPS media-hosts;
 - безопасная TLS-политика.
 
-Пока не считаются release-ready без отдельной проверки на disposable bot:
-живой media acceptance, полноценный streaming UX и полевой тест без VPN.
+### Команды MAX
+
+Плагин регистрирует до 32 команд через `PATCH /me/commands`. Фактический
+набор зависит от командного реестра установленной версии Hermes. На текущей
+проверенной установке доступны:
+
+```text
+/menu /commands /help /status /new /stop /model /compress
+/sessions /resume /retry /undo /agents /whoami /queue /maxstatus
+```
+
+Если приложение MAX не показывает системное меню бота, отправьте `/commands`
+или `/menu`: плагин вернёт тот же список обычным текстом и добавит кнопки.
+После перезапуска gateway в журнале должна появиться строка вида
+`MAX command menu registered (N): ...`.
+
+Для проверки регистрации без polling и без запуска модели:
+
+```bash
+python scripts/max_commands_live_smoke.py
+```
+
+Скрипт выполняет только `GET /me`, `PATCH /me/commands` и повторный `GET /me`;
+токен и содержимое переписки он не печатает. Запускать его следует при одном
+единственном владельце polling, чтобы не смешивать диагностический вызов с
+обработкой событий.
+
+Не считать доказанными только по unit/loader тестам: реальную доставку медиа
+на телефон, чтение содержимого моделью, живой групповой callback и полевой
+тест без VPN. Эти проверки требуют disposable/test bot либо согласованного
+окна с единственным polling-потребителем.
 
 ## 8. Проверка и откат
 
@@ -136,7 +170,10 @@ python -m pytest -q
 ```
 
 Для live-проверки задайте `MAX_BOT_TOKEN` и `MAX_CA_BUNDLE` только в окружении
-процесса и запустите `scripts/max_live_smoke.py`. Проверка
+процесса и запустите `scripts/max_live_smoke.py` без `--poll-seconds`, если
+gateway уже работает. Для исходящей медиа-проверки используйте
+`scripts/max_media_live_smoke.py`; для обезличенной диагностики upload-ответа —
+`scripts/max_upload_live_inspect.py`. Проверка
 `scripts/max_adapter_live_smoke.py` использует временный SQLite и collector
 вместо вызова модели Hermes; активный gateway не запускается и не
 перезапускается.
