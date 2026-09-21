@@ -3,9 +3,12 @@ from __future__ import annotations
 import inspect
 from types import SimpleNamespace
 
+import pytest
+
 import plugins.max.adapter as adapter_module
 from plugins.max.adapter import (
     MaxAdapter,
+    _message_type,
     _build_message_event,
     _send_result_from_ids,
     apply_yaml_config,
@@ -79,3 +82,91 @@ def test_send_result_marks_last_message_and_keeps_prior_continuations() -> None:
 def test_reply_link_uses_max_mid_field() -> None:
     assert adapter_module._reply_link("in-1") == {"type": "reply", "mid": "in-1"}
     assert adapter_module._reply_link(None) is None
+
+
+def test_max_menu_uses_installed_gateway_registry_and_plugin_diagnostics() -> None:
+    adapter = object.__new__(MaxAdapter)
+
+    commands = adapter._max_commands()
+    names = [item["name"] for item in commands]
+
+    assert len(commands) <= 32
+    assert "menu" in names
+    assert "commands" in names
+    assert "maxstatus" in names
+    assert "status" in names
+    assert all(item["name"] == item["name"].lower() for item in commands)
+
+
+def test_max_menu_text_contains_explicit_command_list() -> None:
+    adapter = object.__new__(MaxAdapter)
+
+    text = adapter._command_list_text()
+
+    # The menu must remain visible even when a MAX client hides the native bot menu.
+    assert "Доступные команды Hermes:" in text
+    assert "/commands" in text
+    assert "/maxstatus" in text
+
+
+@pytest.mark.asyncio
+async def test_max_command_registration_uses_visible_command_list() -> None:
+    adapter = object.__new__(MaxAdapter)
+    captured: list[dict[str, str]] = []
+
+    class Client:
+        async def set_bot_commands(self, commands: list[dict[str, str]]) -> None:
+            captured.extend(commands)
+
+    adapter._client = Client()
+
+    await adapter._register_commands()
+
+    names = [item["name"] for item in captured]
+    assert "commands" in names
+    assert "maxstatus" in names
+
+
+def test_incoming_video_maps_to_video_message_type() -> None:
+    message = MaxMessage(
+        message_id="video-1",
+        user_id="42",
+        user_name="Alice",
+        chat_id="42",
+        chat_type="dialog",
+        chat_title=None,
+        text="",
+        attachments=({"type": "video", "payload": {"token": "token"}},),
+    )
+
+    assert getattr(_message_type(message), "value", _message_type(message)) == "video"
+
+
+def test_group_message_scopes_hermes_session_by_participant() -> None:
+    class FakeEvent:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    original_event = adapter_module.MessageEvent
+    adapter_module.MessageEvent = FakeEvent
+    try:
+        adapter = object.__new__(MaxAdapter)
+        adapter.platform = "max"
+        adapter.build_source = lambda **kwargs: SimpleNamespace(**kwargs)
+        message = MaxMessage(
+            message_id="mid-group",
+            user_id="42",
+            user_name="Alice",
+            chat_id="9001",
+            chat_type="chat",
+            chat_title="Group",
+            text="hello",
+        )
+
+        event = _build_message_event(adapter, message)
+    finally:
+        adapter_module.MessageEvent = original_event
+
+    assert event.source.chat_id == "9001::user::42"
+    assert event.metadata["max_chat_id"] == "9001"
+    assert event.metadata["max_target_type"] == "chat"

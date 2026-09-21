@@ -7,6 +7,7 @@ the adapter and delegated to Hermes' existing media cache.
 
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass
 from mimetypes import guess_type
 from pathlib import Path
@@ -15,6 +16,12 @@ from urllib.parse import unquote, urlsplit
 
 MAX_ATTACHMENT_TYPES = frozenset({"image", "video", "audio", "file", "voice"})
 DEFAULT_MEDIA_HOSTS = ("max.ru", "oneme.ru", "okcdn.ru")
+OUTBOUND_MEDIA_HOSTS = DEFAULT_MEDIA_HOSTS + (
+    "fal.media",
+    "fal.ai",
+    "fal-cdn.com",
+    "replicate.delivery",
+)
 _DEFAULT_MIME = {
     "image": "image/jpeg",
     "video": "video/mp4",
@@ -34,6 +41,7 @@ class MaxAttachment:
     url: Optional[str]
     filename: str
     mime_type: str
+    token: Optional[str] = None
 
 
 def media_type_for_file(
@@ -80,7 +88,11 @@ def _first_text(*values: Any) -> str:
 
 def _url_filename(url: str) -> str:
     path = unquote(urlsplit(url).path)
-    return path.rsplit("/", 1)[-1].strip()
+    filename = path.rsplit("/", 1)[-1].strip()
+    # MAX filenames are user-controlled metadata.  Keep a display name but
+    # never allow path separators or control characters into the cache path.
+    filename = filename.replace("\\", "_").replace("/", "_")
+    return "".join(char for char in filename if ord(char) >= 32 and char != "\x7f")[:255]
 
 
 def attachment_from_payload(attachment: Mapping[str, Any]) -> Optional[MaxAttachment]:
@@ -105,6 +117,12 @@ def attachment_from_payload(attachment: Mapping[str, Any]) -> Optional[MaxAttach
         attachment.get("url"),
         attachment.get("download_url"),
     ) or None
+    token = _first_text(
+        payload.get("token"),
+        payload.get("video_token"),
+        attachment.get("token"),
+        attachment.get("video_token"),
+    ) or None
     filename = _first_text(
         payload.get("filename"),
         payload.get("file_name"),
@@ -121,7 +139,13 @@ def attachment_from_payload(attachment: Mapping[str, Any]) -> Optional[MaxAttach
         attachment.get("mime_type"),
         attachment.get("mime"),
     ).lower() or _DEFAULT_MIME[kind]
-    return MaxAttachment(kind=kind, url=url, filename=filename, mime_type=mime_type)
+    return MaxAttachment(
+        kind=kind,
+        url=url,
+        filename=filename,
+        mime_type=mime_type,
+        token=token,
+    )
 
 
 def is_allowed_media_url(
@@ -138,8 +162,32 @@ def is_allowed_media_url(
     host = (parsed.hostname or "").lower().rstrip(".")
     if parsed.scheme.lower() != "https" or not host or parsed.username or parsed.password:
         return False
+    try:
+        if parsed.port not in (None, 443):
+            return False
+    except ValueError:
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None and (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+    ):
+        return False
     for suffix in allowed_hosts:
         root = str(suffix).lower().lstrip("*.").rstrip(".")
         if host == root or host.endswith(f".{root}"):
             return True
     return False
+
+
+def is_allowed_outbound_media_url(url: str) -> bool:
+    """Allow HTTPS image sources used by Hermes' native image extractor."""
+
+    return is_allowed_media_url(url, allowed_hosts=OUTBOUND_MEDIA_HOSTS)

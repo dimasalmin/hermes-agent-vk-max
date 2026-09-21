@@ -18,7 +18,10 @@ logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LENGTH = 4000
 MAX_ATTACHMENT_SIZE = 50 * 1024 * 1024  # 50 MB; refine once API surfaces explicit limit
-MAX_ATTACHMENTS_PER_MESSAGE = 10
+# MAX permits up to 12 image/video media attachments in one message.  Files
+# and audio are split by the adapter because the API applies stricter rules to
+# those combinations.
+MAX_ATTACHMENTS_PER_MESSAGE = 12
 MAX_GLOBAL_RPS = 30
 MAX_CHAT_RPS = 2
 SEND_BUDGET_PER_SEC = MAX_GLOBAL_RPS

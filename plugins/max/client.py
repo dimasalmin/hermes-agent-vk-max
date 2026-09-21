@@ -10,17 +10,46 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 import httpx
 
-from .media import is_allowed_media_url
+from .media import DEFAULT_MEDIA_HOSTS, is_allowed_media_url
 
 DEFAULT_API_BASE = "https://platform-api2.max.ru"
 DEFAULT_TIMEOUT = httpx.Timeout(connect=15.0, read=60.0, write=60.0, pool=15.0)
 _SECRET_PATTERN = re.compile(r"^[A-Za-z0-9_-]{5,256}$")
 MAX_UPLOAD_TYPES = frozenset({"image", "video", "audio", "file"})
 DEFAULT_MEDIA_MAX_BYTES = 50 * 1024 * 1024
+
+
+def _attachment_token(value: Any) -> Optional[str]:
+    """Extract a MAX attachment token from all documented response shapes."""
+
+    if not isinstance(value, Mapping):
+        return None
+    direct = value.get("token")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    for key in ("photos", "payload", "result"):
+        nested = value.get(key)
+        if isinstance(nested, Mapping):
+            token = _attachment_token(nested)
+            if token:
+                return token
+            # The live image upload response uses an opaque photo id as the
+            # mapping key: {"photos": {"<id>": {"token": "..."}}}.
+            if key == "photos":
+                for item in list(nested.values())[:32]:
+                    token = _attachment_token(item)
+                    if token:
+                        return token
+        elif isinstance(nested, (list, tuple)):
+            for item in nested:
+                token = _attachment_token(item)
+                if token:
+                    return token
+    return None
 
 
 class MaxApiError(RuntimeError):
@@ -50,6 +79,16 @@ def _retry_after(response: httpx.Response) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _error_code(error: Mapping[str, Any]) -> Optional[str]:
+    code = error.get("code")
+    if code:
+        return str(code)
+    detail = str(error.get("message") or "").lower()
+    if "attachment.not.ready" in detail or "attachment.file.not.processed" in detail:
+        return "attachment.not.ready"
+    return None
 
 
 class MaxClient:
@@ -132,13 +171,13 @@ class MaxClient:
 
         if response.status_code >= 400:
             error = payload if isinstance(payload, Mapping) else {}
-            code = error.get("code")
+            code = _error_code(error)
             detail = error.get("message") or response.reason_phrase or "MAX API error"
             retryable = response.status_code == 429 or response.status_code >= 500
             raise MaxApiError(
                 f"MAX API {response.status_code}: {detail}",
                 status_code=response.status_code,
-                code=str(code) if code else None,
+                code=code,
                 retry_after=_retry_after(response),
                 retryable=retryable,
             )
@@ -148,15 +187,56 @@ class MaxClient:
     async def get_me(self) -> Mapping[str, Any]:
         return await self._request("GET", "/me")
 
+    async def set_bot_commands(
+        self, commands: Iterable[Mapping[str, str]]
+    ) -> Mapping[str, Any]:
+        """Replace the slash-command menu exposed by MAX."""
+
+        normalized: list[dict[str, str]] = []
+        for command in commands:
+            if not isinstance(command, Mapping):
+                continue
+            name = str(command.get("name") or "").strip().lstrip("/").lower()
+            description = str(command.get("description") or "").strip()
+            if not re.fullmatch(r"[a-z0-9_]{1,32}", name) or not description:
+                continue
+            normalized.append({"name": name, "description": description[:128]})
+        if len(normalized) > 32:
+            normalized = normalized[:32]
+        return await self._request("PATCH", "/me/commands", json={"commands": normalized})
+
+    async def send_action(self, chat_id: str, action: str) -> Mapping[str, Any]:
+        """Send a documented MAX chat action such as ``typing``."""
+
+        chat_id = str(chat_id).strip()
+        action = str(action).strip().lower()
+        if not chat_id or not re.fullmatch(r"[a-z0-9_.:-]{1,256}", action):
+            raise ValueError("MAX chat action arguments are invalid")
+        return await self._request(
+            "POST",
+            f"/chats/{quote(chat_id, safe='')}/actions",
+            json={"action": action},
+        )
+
+    async def get_video(self, video_token: str) -> Mapping[str, Any]:
+        """Resolve an inbound MAX video token into downloadable URLs."""
+
+        video_token = str(video_token).strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,512}", video_token):
+            raise ValueError("MAX video token is invalid")
+        result = await self._request("GET", f"/videos/{quote(video_token, safe='')}")
+        return result if isinstance(result, Mapping) else {}
+
     async def download_media(
         self,
         url: str,
         *,
         max_bytes: int = DEFAULT_MEDIA_MAX_BYTES,
+        allowed_hosts: tuple[str, ...] = DEFAULT_MEDIA_HOSTS,
     ) -> tuple[bytes, str]:
         """Download one inbound MAX attachment with bounded size and redirects."""
 
-        if not is_allowed_media_url(url):
+        if not is_allowed_media_url(url, allowed_hosts=allowed_hosts):
             raise MaxApiError("MAX media URL is not allowed")
         if max_bytes <= 0:
             raise ValueError("MAX media max_bytes must be positive")
@@ -165,7 +245,7 @@ class MaxClient:
         media_http = self._get_media_http()
         try:
             for _ in range(4):
-                if not is_allowed_media_url(current_url):
+                if not is_allowed_media_url(current_url, allowed_hosts=allowed_hosts):
                     raise MaxApiError("MAX media redirect URL is not allowed")
                 async with media_http.stream(
                     "GET", current_url, follow_redirects=False
@@ -203,50 +283,29 @@ class MaxClient:
                 retryable=True,
             ) from exc
 
-    async def upload_media(
+    async def _upload_multipart(
         self,
-        file_path: str | Path,
+        upload_info: Mapping[str, Any],
         *,
+        filename: str,
+        content: Any,
+        content_type: str,
         media_type: str,
-        max_bytes: int = DEFAULT_MEDIA_MAX_BYTES,
-        mime_type: Optional[str] = None,
     ) -> Mapping[str, Any]:
-        """Upload a local file using the current MAX two-step token flow."""
-
-        media_type = str(media_type).strip().lower()
-        if media_type not in MAX_UPLOAD_TYPES:
-            raise ValueError(f"Unsupported MAX upload type: {media_type}")
-        path = Path(file_path)
-        try:
-            size = path.stat().st_size
-        except OSError as exc:
-            raise MaxApiError(f"MAX media file is not readable: {path.name}") from exc
-        if size > max_bytes:
-            raise MaxApiError("MAX media file exceeds configured size limit")
-
-        upload_info = await self._request(
-            "POST", "/uploads", params={"type": media_type}
-        )
+        if not isinstance(upload_info, Mapping):
+            raise MaxApiError("MAX returned an invalid media upload response")
         upload_url = str(upload_info.get("url") or "").strip()
         if not upload_url or not is_allowed_media_url(upload_url):
             raise MaxApiError("MAX returned an invalid media upload URL")
-
-        content_type = mime_type or {
-            "image": "image/jpeg",
-            "video": "video/mp4",
-            "audio": "audio/ogg",
-            "file": "application/octet-stream",
-        }[media_type]
         media_http = self._get_media_http()
         try:
-            with path.open("rb") as file_obj:
-                response = await media_http.post(
-                    upload_url,
-                    files={"data": (path.name, file_obj, content_type)},
-                    headers={"Authorization": self._token, "Accept": "application/json"},
-                    follow_redirects=False,
-                )
-        except (OSError, httpx.RequestError) as exc:
+            response = await media_http.post(
+                upload_url,
+                files={"data": (filename, content, content_type)},
+                headers={"Accept": "application/json"},
+                follow_redirects=False,
+            )
+        except httpx.RequestError as exc:
             raise MaxApiError(
                 f"MAX media upload transport error: {exc.__class__.__name__}",
                 retryable=True,
@@ -256,24 +315,124 @@ class MaxClient:
             payload = response.json()
         except ValueError:
             payload = {}
-        if response.status_code >= 400:
+        if response.status_code >= 300:
             error = payload if isinstance(payload, Mapping) else {}
             detail = error.get("message") or response.reason_phrase or "MAX upload error"
             raise MaxApiError(
                 f"MAX media upload HTTP {response.status_code}: {detail}",
                 status_code=response.status_code,
-                code=str(error.get("code")) if error.get("code") else None,
+                code=_error_code(error),
                 retry_after=_retry_after(response),
                 retryable=response.status_code == 429 or response.status_code >= 500,
             )
         if not isinstance(payload, Mapping):
             payload = {}
         result = dict(payload)
-        if not result.get("token") and upload_info.get("token"):
-            result["token"] = upload_info["token"]
-        if not result.get("token"):
+        token = _attachment_token(result) or _attachment_token(upload_info)
+        reported_type = result.get("type") or upload_info.get("type")
+        if reported_type:
+            normalized_type = {"photo": "image", "document": "file"}.get(
+                str(reported_type).strip().lower(), str(reported_type).strip().lower()
+            )
+            requested_type = str(media_type).strip().lower()
+            if normalized_type in MAX_UPLOAD_TYPES and normalized_type != requested_type:
+                raise MaxApiError(
+                    f"MAX upload type mismatch: requested {requested_type}, received {normalized_type}"
+                )
+        if token:
+            result["token"] = token
+        if not token:
             raise MaxApiError("MAX media upload returned no attachment token")
         return result
+
+    async def upload_media(
+        self,
+        file_path: str | Path,
+        *,
+        media_type: str,
+        max_bytes: int = DEFAULT_MEDIA_MAX_BYTES,
+        mime_type: Optional[str] = None,
+        filename: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        """Upload a local file using the current MAX two-step token flow."""
+
+        media_type = str(media_type).strip().lower()
+        if media_type not in MAX_UPLOAD_TYPES:
+            raise ValueError(f"Unsupported MAX upload type: {media_type}")
+        if max_bytes <= 0:
+            raise ValueError("MAX media max_bytes must be positive")
+        path = Path(file_path)
+        try:
+            if not path.is_file():
+                raise OSError("not a regular file")
+            size = path.stat().st_size
+        except OSError as exc:
+            raise MaxApiError(f"MAX media file is not readable: {path.name}") from exc
+        if size > max_bytes:
+            raise MaxApiError("MAX media file exceeds configured size limit")
+
+        upload_info = await self._request(
+            "POST", "/uploads", params={"type": media_type}
+        )
+        content_type = mime_type or {
+            "image": "image/jpeg",
+            "video": "video/mp4",
+            "audio": "audio/ogg",
+            "file": "application/octet-stream",
+        }[media_type]
+        try:
+            with path.open("rb") as file_obj:
+                return await self._upload_multipart(
+                    upload_info,
+                    filename=Path(str(filename or path.name)).name or path.name,
+                    content=file_obj,
+                    content_type=content_type,
+                    media_type=media_type,
+                )
+        except OSError as exc:
+            raise MaxApiError(
+                f"MAX media upload transport error: {exc.__class__.__name__}",
+                retryable=True,
+            ) from exc
+
+    async def upload_media_bytes(
+        self,
+        data: bytes,
+        *,
+        filename: str,
+        media_type: str,
+        max_bytes: int = DEFAULT_MEDIA_MAX_BYTES,
+        mime_type: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        """Upload bounded in-memory media fetched from an approved HTTPS URL."""
+
+        media_type = str(media_type).strip().lower()
+        if media_type not in MAX_UPLOAD_TYPES:
+            raise ValueError(f"Unsupported MAX upload type: {media_type}")
+        if max_bytes <= 0:
+            raise ValueError("MAX media max_bytes must be positive")
+        if len(data) > max_bytes:
+            raise MaxApiError("MAX media file exceeds configured size limit")
+        safe_name = Path(str(filename or "attachment")).name or "attachment"
+        safe_name = "".join(
+            char for char in safe_name if ord(char) >= 32 and char != "\x7f"
+        )[:255]
+        upload_info = await self._request(
+            "POST", "/uploads", params={"type": media_type}
+        )
+        content_type = mime_type or {
+            "image": "image/jpeg",
+            "video": "video/mp4",
+            "audio": "audio/ogg",
+            "file": "application/octet-stream",
+        }[media_type]
+        return await self._upload_multipart(
+            upload_info,
+            filename=safe_name,
+            content=data,
+            content_type=content_type,
+            media_type=media_type,
+        )
 
     async def send_message(
         self,

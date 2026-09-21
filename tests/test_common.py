@@ -32,15 +32,27 @@ def test_access_allow_all_overrides_lists():
 
 
 def test_access_group_allows_via_chat_allowlist():
-    p = AccessPolicy(group_allowed_chats={"-100123"})
+    p = AccessPolicy(group_allowed_users={"99"}, group_allowed_chats={"-100123"})
     assert p.can_group("99", "-100123", mentioned=False) is True
     assert p.can_group("99", "-100999", mentioned=False) is False
 
 
+def test_access_group_requires_allowlisted_user_and_chat():
+    p = AccessPolicy(group_allowed_users={"99"}, group_allowed_chats={"-100123"})
+    assert p.can_group("100", "-100123", mentioned=False) is False
+    assert p.can_group("99", "-100999", mentioned=False) is False
+
+
 def test_access_guest_mode_requires_mention():
-    p = AccessPolicy(guest_mode=True)
+    p = AccessPolicy(guest_mode=True, group_allowed_chats={"any"})
     assert p.can_group("99", "any", mentioned=True) is True
     assert p.can_group("99", "any", mentioned=False) is False
+
+
+def test_access_admin_is_explicit():
+    p = AccessPolicy(admin_users={"1"})
+    assert p.is_admin("1") is True
+    assert p.is_admin("2") is False
 
 
 def test_access_commands_default_unrestricted_without_admin_config():

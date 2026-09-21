@@ -57,7 +57,7 @@ def test_callback_from_update_normalizes_dm_sender_and_message() -> None:
         "callback": {
             "callback_id": "callback-1",
             "payload": "hmx:clarify:opaque-token",
-            "user": {"user_id": 100000001, "name": "Alice"},
+            "user": {"user_id": 9533440, "name": "Alice"},
             "message": {
                 "sender": {"user_id": 999, "is_bot": True},
                 "recipient": {"chat_type": "dialog", "user_id": 999},
@@ -71,8 +71,8 @@ def test_callback_from_update_normalizes_dm_sender_and_message() -> None:
     assert callback is not None
     assert callback.callback_id == "callback-1"
     assert callback.payload == "hmx:clarify:opaque-token"
-    assert callback.user_id == "100000001"
-    assert callback.chat_id == "100000001"
+    assert callback.user_id == "9533440"
+    assert callback.chat_id == "9533440"
     assert callback.chat_type == "dialog"
     assert callback.message_id == "prompt-1"
 

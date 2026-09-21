@@ -10,14 +10,21 @@
 
 ## Unreleased
 
-- Added MAX inline keyboards for Hermes clarify prompts, exec approvals and
-  slash confirmations.
-- Added a two-step `/model` picker for provider and model selection.
-- Added official `/answers` callback acknowledgement, user/chat binding,
-  expiry and single-use replay protection.
-- Added bounded inbound media caching, outbound `MEDIA:` uploads, standalone
-  media delivery and `MAX_MEDIA_MAX_BYTES` configuration.
-- Kept the feature in the external plugin; Hermes core remains unchanged.
+- Добавлены inline-кнопки MAX для уточнений Hermes, подтверждений exec и
+  slash-команд.
+- Добавлен двухшаговый выбор провайдера и модели через `/model`.
+- Добавлено подтверждение callback через `/answers`, привязка к пользователю и
+  чату, срок действия и защита от повторного нажатия.
+- Добавлено ограниченное кеширование входящих вложений, исходящие загрузки
+  `MEDIA:`, standalone-доставка и настройка `MAX_MEDIA_MAX_BYTES`.
+- Добавлены нативные методы MAX для изображений, документов, аудио и видео,
+  обработка upload-токенов, группировка медиа, разрешение video-токенов и
+  отчёт о частичных ошибках внешнего плагина.
+- Добавлены `/menu`, `/start`, `/commands` и `/maxstatus`; при скрытом
+  системном меню список команд возвращается обычным текстом.
+- Добавлена обезличенная проверка `max_commands_live_smoke.py` и запись в
+  журнал точного списка команд, зарегистрированного через `PATCH /me/commands`.
+- Реализация остаётся внешним плагином; ядро Hermes не изменяется.
 
 ## 0.2.0 - 2026-08-08
 

@@ -1,21 +1,22 @@
-# Плагин MAX для Hermes Agent
+# Плагин MAX для Hermes
 
-Каталог самодостаточен: Hermes загружает внешний plugin как отдельный
-`hermes_plugins.<slug>`. Устанавливайте его штатной командой:
+Каталог самодостаточен: Hermes загружает внешние плагины как
+`hermes_plugins.<slug>`. Внутренние импорты должны оставаться относительными;
+плагин не должен зависеть от соседних пакетов репозитория.
 
-```bash
-hermes plugins install dimasalmin/hermes-agent-ru-messengers/plugins/max --enable
-```
+Плагин работает с MAX Bot API v2 через `platform-api2.max.ru` и использует
+публичный контракт адаптера Hermes. Реализованы текст, двусторонняя доставка
+изображений, документов, аудио и видео, кеширование входящих вложений,
+регистрация slash-команд, inline-кнопки, политика доступа для DM и групп,
+Webhook и Long Polling для разработки.
 
-Не помещайте plugin в исходное дерево Hermes. Плагин работает с MAX Bot API v2,
-поддерживает Long Polling для разработки, заготовки Webhook-приёмника, allowlist
-и проверку TLS. Токен MAX храните в защищённом prompt Hermes или локальном
-`.env`, не в истории чата.
+Нативное меню регистрируется через `PATCH /me/commands`. Команды `/start`,
+`/menu` и `/commands` дополнительно отправляют список обычным текстом, если
+клиент MAX не показывает системное меню бота.
 
-Полная русская инструкция: [настройка MAX](https://github.com/dimasalmin/hermes-agent-ru-messengers/blob/main/docs/ru/max-setup.md).
+Установите этот каталог как `~/.hermes/plugins/max/` вместе с манифестом
+`plugin.yaml` в нижнем регистре. Не копируйте его в исходное дерево Hermes.
 
-## English summary
-
-Self-contained MAX Bot API v2 platform plugin. Install the `plugins/max`
-subdirectory with Hermes, keep it outside Hermes core, protect the bot token,
-and follow the [English setup guide](https://github.com/dimasalmin/hermes-agent-ru-messengers/blob/main/docs/en/max-setup.md).
+Основная инструкция: `../../docs/ru/max-setup.md`; интерактивные сценарии:
+`../../docs/ru/max-interactive.md`; журнал реализации:
+`../../docs/analysis/2026-09-20-max-media-implementation.md`.

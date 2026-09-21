@@ -6,7 +6,7 @@ Required environment:
 
 Example:
     MAX_BOT_TOKEN=... MAX_CA_BUNDLE=/tmp/max-ca-bundle.pem \
-      python scripts/max_live_smoke.py --user-id 100000001 --send --poll-seconds 30
+      python scripts/max_live_smoke.py --user-id 9533440 --send --poll-seconds 30
 """
 
 from __future__ import annotations
@@ -14,7 +14,24 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import sys
+from pathlib import Path
 from typing import Any, Mapping
+
+# Hermes ships a concrete top-level ``plugins`` package.  Extend that package
+# with this repository's external plugin path before importing MAX.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+try:
+    import plugins as _hermes_plugins
+except ImportError:
+    _hermes_plugins = None
+else:
+    plugin_root = str(REPOSITORY_ROOT / "plugins")
+    namespace_path = getattr(_hermes_plugins, "__path__", None)
+    if namespace_path is not None and plugin_root not in namespace_path:
+        namespace_path.append(plugin_root)
 
 from plugins.max.client import DEFAULT_API_BASE, MaxClient
 from plugins.max.tls import tls_verify_from_env
@@ -57,6 +74,14 @@ async def _run(args: argparse.Namespace) -> int:
     try:
         bot = await client.get_me()
         print(f"me_status=ok user_id={bot.get('user_id') or bot.get('id')} username={bot.get('username')}")
+        commands = bot.get("commands")
+        if isinstance(commands, list):
+            names = [
+                str(item.get("name"))
+                for item in commands
+                if isinstance(item, Mapping) and item.get("name")
+            ]
+            print(f"commands_status=ok count={len(names)} names={','.join(names)}")
 
         if args.send:
             if not args.user_id:

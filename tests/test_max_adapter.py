@@ -305,3 +305,41 @@ async def test_clarify_other_callback_enables_gateway_text_capture(monkeypatch) 
 
     assert captured == ["clarify-1"]
     assert client.answers[0][1]["message"]["text"] == "Введите свой вариант следующим сообщением."
+
+
+@pytest.mark.asyncio
+async def test_group_admin_callback_rejects_non_admin_without_consuming_button() -> None:
+    client = _InteractiveClient()
+    adapter = _interactive_adapter(client)
+    adapter._access = AccessPolicy(
+        allowed_users={"member-1", "member-2"},
+        group_allowed_chats={"group-1"},
+        admin_users={"member-1"},
+    )
+    payload = adapter._callbacks.issue(
+        "approval",
+        "once",
+        user_id="*",
+        chat_id="group-1",
+        session_key="session-1",
+    )
+    callback = MaxCallback.from_update(
+        {
+            "update_type": "message_callback",
+            "callback": {
+                "callback_id": "cb-group",
+                "payload": payload,
+                "user": {"user_id": "member-2"},
+                "message": {
+                    "recipient": {"chat_type": "chat", "chat_id": "group-1"},
+                    "body": {"mid": "prompt-group"},
+                },
+            },
+        }
+    )
+
+    assert callback is not None
+    await adapter._dispatch_callback(callback)
+
+    assert client.answers[0][1]["message"]["text"] == "Это действие доступно только администратору группы."
+    assert adapter._callbacks.peek(payload) is not None

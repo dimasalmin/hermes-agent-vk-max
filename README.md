@@ -17,7 +17,7 @@
 
 ### Что входит
 
-- MAX Bot API v2, текстовая маршрутизация, Webhook/Long Polling, callback-кнопки, выбор модели, ограниченный транспорт медиа и проверка TLS;
+- MAX Bot API v2, текстовая маршрутизация, Webhook/Long Polling, callback-кнопки, выбор модели, двусторонний транспорт изображений, документов, аудио и видео до 50 MiB, меню команд и проверка TLS;
 - VK Community Long Poll, устойчивый marker и дедупликация, прямой API-клиент, callbacks, typing, редактирование сообщений, pairing, allowlist и ограниченный транспорт медиа;
 - манифесты `plugin.yaml`, адаптеры платформ, standalone sender hooks, contract tests и loader smoke scripts.
 
@@ -82,6 +82,17 @@ python -m pip install -e ".[dev]"
 python -m pytest -q
 python -m compileall -q plugins tests scripts
 ```
+
+Для проверки нативного меню MAX без polling и без запуска модели:
+
+```bash
+python scripts/max_commands_live_smoke.py
+```
+
+Если клиент MAX не показывает системное меню, команды `/start`, `/menu` и
+`/commands` возвращают тот же список обычным текстом и добавляют кнопки.
+Текущий проверенный набор и ограничения описаны в
+[русской инструкции MAX](docs/ru/max-setup.md).
 
 Секреты для live-проверок передавайте только через окружение. Не публикуйте токены, cookies, базы данных, логи или production-конфигурацию.
 

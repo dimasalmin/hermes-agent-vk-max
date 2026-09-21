@@ -45,6 +45,22 @@ def test_callback_store_expires_entries() -> None:
     assert store.consume(payload, user_id="user-1", chat_id="chat-1") is None
 
 
+def test_callback_store_supports_group_scoped_wildcard_before_consumption() -> None:
+    store = MaxCallbackStore()
+    payload = store.issue(
+        "approval",
+        "once",
+        user_id="*",
+        chat_id="group-1",
+        session_key="session-1",
+    )
+
+    assert store.peek(payload) is not None
+    entry = store.consume(payload, user_id="admin-1", chat_id="group-1")
+    assert entry is not None
+    assert store.peek(payload) is None
+
+
 def test_inline_keyboard_uses_max_callback_attachment_shape() -> None:
     assert build_inline_keyboard(
         [[{"type": "callback", "text": "OK", "payload": "hmx:approval:x"}]]
