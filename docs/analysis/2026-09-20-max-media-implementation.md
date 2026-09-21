@@ -80,6 +80,9 @@ existing gateway poller:
   them as two MAX-compatible messages. The test used the normal
   `MAX_CA_BUNDLE`; TLS stayed enabled, and the document send retried once
   while MAX processed the attachment.
+- The live `/me` response contained 15 registered commands. Because native
+  command-menu rendering is client-dependent, `/start`, `/menu` and
+  `/commands` now also send the command list as ordinary text.
 - The gateway remained the only polling consumer; no direct smoke called
   `get_updates`.
 

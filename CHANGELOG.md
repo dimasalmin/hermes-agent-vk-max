@@ -25,6 +25,9 @@
   `attachment.not.ready` processing response is retried.
 - Added a TLS context that preserves system roots while adding the configured
   MAX CA bundle; live image/document upload and delivery were verified.
+- Added a visible text command list to `/start` and `/menu`, plus `/commands`,
+  so the channel remains usable when a MAX client does not render the native
+  bot-command menu.
 - Kept the feature in the external plugin; Hermes core remains unchanged.
 
 ## 0.2.0 - 2026-08-08

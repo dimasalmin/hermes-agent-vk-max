@@ -124,7 +124,8 @@ reverse proxy. Подробности: `docs/ops/max-upgrade-safe.md` и
   видео группируются до 12 вложений, файлы и аудио отправляются отдельными
   совместимыми сообщениями; ошибка одного вложения не скрывает остальные;
 - меню до 32 подтверждённых Hermes-команд через `PATCH /me/commands`, `/menu`,
-  `/start`, `/maxstatus` и inline-кнопки;
+  `/start`, `/commands`, `/maxstatus` и inline-кнопки; список команд также
+  дублируется текстом, если клиент MAX не показывает системное меню;
 - typing/typing_off, durable polling inbox и состояния pending/processing/
   processed/failed без автоматического повтора неоднозначного события;
 - ограничение размера и проверка официальных HTTPS media-hosts;

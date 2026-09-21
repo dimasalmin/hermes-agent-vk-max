@@ -554,6 +554,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
 
         descriptions = {
             "menu": "Показать кнопки Hermes",
+            "commands": "Показать список доступных команд",
             "maxstatus": "Состояние очереди MAX",
             "help": "Список доступных команд",
             "status": "Статус сессии и модели",
@@ -571,7 +572,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             "whoami": "Проверить доступ",
         }
         preferred = [
-            "menu", "help", "status", "new", "stop", "model", "compress",
+            "menu", "commands", "help", "status", "new", "stop", "model", "compress",
             "sessions", "resume", "retry", "undo", "agents", "whoami",
             "queue", "background", "maxstatus",
         ]
@@ -590,7 +591,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
 
         result: list[dict[str, str]] = []
         for name in preferred:
-            if name == "menu" or name == "maxstatus":
+            if name in {"menu", "commands", "maxstatus"}:
                 result.append({"name": name, "description": descriptions[name]})
                 continue
             item = registry.get(name)
@@ -860,6 +861,13 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
     async def _handle_local_command(self, message: MaxMessage) -> bool:
         command = _command_name(message.text)
         if command == "menu":
+            await self._send_menu(
+                message.chat_id,
+                message.user_id,
+                target_type="chat" if message.is_group else "user",
+            )
+            return True
+        if command == "commands":
             await self._send_menu(
                 message.chat_id,
                 message.user_id,
@@ -1197,6 +1205,14 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             "Повторная обработка неоднозначных событий автоматически не выполняется."
         )
 
+    def _command_list_text(self, *, welcome: bool = False) -> str:
+        command_lines = "\n".join(
+            f"/{item['name']} — {item['description']}"
+            for item in self._max_commands()
+        )
+        heading = "Hermes готов к работе." if welcome else "Доступные команды Hermes:"
+        return f"{heading}\n\n{command_lines}\n\nВыберите действие:"[:MAX_MESSAGE_LENGTH]
+
     async def _send_menu(
         self,
         chat_id: str,
@@ -1208,6 +1224,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
         if self._client is None:
             return
         label_map = {
+            "commands": "Команды",
             "help": "Помощь",
             "status": "Статус",
             "new": "Новая сессия",
@@ -1218,7 +1235,10 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
         }
         available = {item["name"] for item in self._max_commands()}
         button_names = [
-            name for name in ("help", "status", "new", "model", "stop", "compress", "maxstatus")
+            name
+            for name in (
+                "commands", "help", "status", "new", "model", "stop", "compress", "maxstatus"
+            )
             if name in available
         ]
         rows: list[list[Mapping[str, str]]] = []
@@ -1235,7 +1255,7 @@ class MaxAdapter(BasePlatformAdapter):  # type: ignore[misc]
             buttons.append({"type": "callback", "text": label_map[name], "payload": payload})
         for index in range(0, len(buttons), 2):
             rows.append(buttons[index : index + 2])
-        text = "Hermes готов к работе. Выберите действие:" if welcome else "Выберите действие:"
+        text = self._command_list_text(welcome=welcome)
         try:
             await self._rate_limiter.acquire(str(chat_id))
 

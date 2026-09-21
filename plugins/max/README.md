@@ -8,6 +8,9 @@ The plugin targets MAX Bot API v2 at `platform-api2.max.ru` and uses the public
 Hermes platform adapter contract. The current release path includes text,
 native media delivery, inbound media caching, slash-command registration,
 inline buttons, DM/group access policy, Webhook and development Long Polling.
+The native command menu is registered through `PATCH /me/commands`; `/start`,
+`/menu` and `/commands` also send an ordinary-text command list for MAX clients
+that do not render the native menu.
 
 Install this directory as `~/.hermes/plugins/max/` with the lowercase
 `plugin.yaml` manifest. Do not install it inside the Hermes source tree.

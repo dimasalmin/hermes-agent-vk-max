@@ -90,9 +90,21 @@ def test_max_menu_uses_installed_gateway_registry_and_plugin_diagnostics() -> No
 
     assert len(commands) <= 32
     assert "menu" in names
+    assert "commands" in names
     assert "maxstatus" in names
     assert "status" in names
     assert all(item["name"] == item["name"].lower() for item in commands)
+
+
+def test_max_menu_text_contains_explicit_command_list() -> None:
+    adapter = object.__new__(MaxAdapter)
+
+    text = adapter._command_list_text()
+
+    # The menu must remain visible even when a MAX client hides the native bot menu.
+    assert "Доступные команды Hermes:" in text
+    assert "/commands" in text
+    assert "/maxstatus" in text
 
 
 def test_incoming_video_maps_to_video_message_type() -> None:

@@ -95,8 +95,9 @@ bypass Hermes global authorization.
 - Image, document, audio/voice and video delivery is wired to Hermes' native
   adapter methods in both directions; inbound bytes use Hermes' existing
   cache, and outbound files use `/uploads` plus multipart `data`.
-- The command menu, `/menu`, `/start`, `/maxstatus`, native buttons and group
-  participant-scoped sessions are implemented.
+- The command menu, `/menu`, `/start`, `/commands`, `/maxstatus`, native buttons
+  and group participant-scoped sessions are implemented. `/start`, `/menu` and
+  `/commands` include a text fallback when a MAX client hides the native menu.
 - Outbound image and document upload/delivery have been live-smoked; inbound
   media, phone rendering and model-use acceptance remain pending.
 - Media batching follows MAX's restriction: image/video batches are limited to
